@@ -35,10 +35,18 @@ WORKDIR /tmp/opencodex-src
 RUN --mount=type=cache,target=/home/bun/.bun/install/cache \
     bun install --frozen-lockfile
 
+# Patch fast-uri to >=3.1.6 within upstream's specified "^3.1.5" range to resolve CVE-2026-75899 et al.
+RUN bun update fast-uri
+
 # Build the GUI (vite) exactly as upstream's own `build:gui` does.
 RUN cd gui && bun install --frozen-lockfile && bun run build
 
+# Remove development-only toolchains containing native binaries (e.g. tsc) before copying to runtime
+RUN rm -rf /tmp/opencodex-src/node_modules/@typescript /tmp/opencodex-src/node_modules/typescript
+
 FROM ${BUN_IMAGE} AS runtime
+# Apply Debian security updates to patch base image CVEs (e.g. openssl, util-linux)
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 WORKDIR /home/bun/app
 
 ARG UPSTREAM_VERSION
