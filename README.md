@@ -54,14 +54,10 @@ gh attestation verify \
 export OCX_API_TOKEN=$(openssl rand -hex 32)
 mkdir -p secrets && printf '%s' "$OCX_API_TOKEN" > secrets/ocx_api_token
 
-# 2. First-run init on the named volume (before the normal start)
-docker compose run --rm hub bun run src/cli/index.ts config set runtimeRole hub
-docker compose run --rm hub bun run src/cli/index.ts config set hostname 0.0.0.0
-
-# 3. Start
+# 2. Start (defaults to hub role + 0.0.0.0 bind on first run automatically)
 docker compose up -d
 
-# 4. Prove readiness (healthz alone is NOT acceptance)
+# 3. Prove readiness (healthz alone is NOT acceptance)
 curl -fsS http://127.0.0.1:10100/healthz
 curl -fsS http://127.0.0.1:10100/readyz
 ```

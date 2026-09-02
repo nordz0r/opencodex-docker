@@ -14,6 +14,7 @@
 ARG BUN_IMAGE=oven/bun:1.4.0@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c755d758f0c6ef89c2d6
 
 FROM ${BUN_IMAGE} AS build
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /home/bun/app
 
 # Upstream sources are fetched from the exact verified tag; the build context carries
@@ -54,7 +55,9 @@ COPY --from=build --chown=bun:bun /tmp/opencodex-src/src ./src
 COPY --from=build --chown=bun:bun /tmp/opencodex-src/gui/dist ./gui/dist
 COPY --from=build --chown=bun:bun /tmp/opencodex-src/bin ./bin
 COPY --chown=bun:bun scripts/docker-entrypoint.sh ./docker-entrypoint.sh
-RUN chmod +x ./docker-entrypoint.sh
+RUN chmod +x ./docker-entrypoint.sh \
+    && mkdir -p /home/bun/.opencodex \
+    && chown -R bun:bun /home/bun
 
 # OCI provenance labels: where the code came from, exactly.
 LABEL org.opencontainers.image.title="opencodex" \

@@ -18,10 +18,15 @@ cleanup() {
 trap cleanup EXIT
 
 echo "[smoke] starting ${IMAGE}"
-# No token file is mounted: the negative-auth assertion depends on it being absent.
+# OpenCodex enforces that non-loopback bindings (0.0.0.0) require a data-plane
+# token (OPENCODEX_API_AUTH_TOKEN or OCX_API_TOKEN_FILE).
+# We pass a test token so the proxy starts; the negative-auth assertion confirms
+# anonymous requests to protected endpoints are rejected with HTTP 401.
+SMOKE_TOKEN="smoke-test-token-$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 docker run -d --name "${CTR}" \
   --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  -e OPENCODEX_API_AUTH_TOKEN="${SMOKE_TOKEN}" \
   -v "${STATE_VOL}:/home/bun/.opencodex" \
   -p 127.0.0.1:0:10100 \
   "${IMAGE}" >/dev/null
