@@ -41,7 +41,7 @@ jobs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
       - name: Checkout packaging repo
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -85,7 +85,7 @@ jobs:
 
       - name: Log in to GHCR
         if: ${{ inputs.publish }}
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -93,18 +93,18 @@ jobs:
 
       - name: Log in to Docker Hub
         if: ${{ inputs.publish }}
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: docker.io
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       # Single-arch amd64 build first: smoke + scan must gate publishing.
       - name: Build amd64 for smoke/scan
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           platforms: linux/amd64
@@ -121,7 +121,7 @@ jobs:
         run: bash scripts/smoke-test.sh opencodex-smoke:amd64
 
       - name: Trivy vulnerability scan (CRITICAL + fixable HIGH block)
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           image-ref: opencodex-smoke:amd64
           format: table
@@ -130,7 +130,7 @@ jobs:
           severity: CRITICAL,HIGH
 
       - name: Generate SPDX SBOM
-        uses: anchore/sbom-action@da167eac915b4e86f08b264dbdbc867b61be6f0c # v0.20.5
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: opencodex-smoke:amd64
           format: spdx-json
@@ -142,7 +142,7 @@ jobs:
       - name: Push multi-arch image
         if: ${{ inputs.publish }}
         id: push
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -158,7 +158,7 @@ jobs:
 
       - name: Artifact attestation for GHCR digest
         if: ${{ inputs.publish }}
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/nordz0r/opencodex
           subject-digest: ${{ steps.push.outputs.digest }}
@@ -173,7 +173,7 @@ jobs:
       contents: write
     steps:
       - name: Create release with image digest evidence
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const version = '${{ inputs.version }}';
