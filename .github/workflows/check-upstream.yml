@@ -27,8 +27,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: read
-      issues: write
+      packages: write       # needed by the nested reusable build (GHCR push)
+      issues: write         # failure tracking issue
+      id-token: write       # artifact attestation
+      attestations: write   # artifact attestation
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       commit: ${{ steps.resolve.outputs.commit }}
@@ -92,11 +94,6 @@ jobs:
           version: ${{ steps.resolve.outputs.version }}
           commit: ${{ steps.resolve.outputs.commit }}
           publish: true
-        permissions:
-          contents: write
-          packages: write
-          id-token: write
-          attestations: write
 
   report-failure:
     name: Open/update failure issue
