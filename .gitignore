@@ -1,0 +1,8 @@
+# Local secrets — never commit
+secrets/
+.env
+*.token
+
+# Local build scratch
+*.tar
+.tmp/

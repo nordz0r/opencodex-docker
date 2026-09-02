@@ -1,0 +1,26 @@
+services:
+  hub:
+    image: ghcr.io/nordz0r/opencodex:2.40.0
+    # Prefer an exact digest in production:
+    # image: ghcr.io/nordz0r/opencodex@sha256:<digest>
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    ports:
+      - "10100:10100"   # data plane only; never publish 10101
+    volumes:
+      - ocx-state:/home/bun/.opencodex
+    secrets:
+      - source: ocx_api_token
+        target: ocx_api_token
+        uid: "1000"
+        gid: "1000"
+        mode: 0440
+    restart: unless-stopped
+
+volumes:
+  ocx-state:
+
+secrets:
+  ocx_api_token:
+    file: ./secrets/ocx_api_token

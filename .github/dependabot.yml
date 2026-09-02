@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
+    # actions are pinned to commit SHAs; dependabot updates the comment + SHA
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    # oven/bun base image bump requires resolving a NEW digest and updating
+    # both Dockerfile stages; review manually, digest pins are intentional
+    open-pull-requests-limit: 2

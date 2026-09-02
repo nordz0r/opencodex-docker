@@ -1,0 +1,143 @@
+# Daily upstream version detection. Resolves the stable version from npm
+# dist-tag `latest`, verifies the signed upstream git tag and package.json
+# agreement, skips if GHCR already has that exact tag (idempotent), and
+# otherwise triggers the reusable build with the immutable commit SHA.
+name: check-upstream
+
+on:
+  schedule:
+    - cron: '23 4 * * *'   # daily, off the :00/:30 marks
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Force a specific version (e.g. 2.40.0). Empty = npm latest.'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opencodex-release-${{ inputs.version || 'auto' }}
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Detect & verify new upstream version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      issues: write
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      commit: ${{ steps.resolve.outputs.commit }}
+      already_published: ${{ steps.check.outputs.already }}
+    steps:
+      - name: Resolve target version and immutable commit
+        id: resolve
+        run: |
+          set -euo pipefail
+          forced='${{ inputs.version }}'
+          if [ -n "${forced}" ]; then
+            version="${forced}"
+          else
+            meta="$(curl -fsSL https://registry.npmjs.org/@bitkyc08%2Fopencodex)"
+            version="$(printf '%s' "${meta}" | node -e "let r='';process.stdin.on('data',c=>r+=c).on('end',()=>{const p=JSON.parse(r);const v=p['dist-tags'].latest;if(v.includes('-')){console.error('latest is a prerelease: '+v);process.exit(1)};process.stdout.write(v)})")"
+          fi
+          case "${version}" in
+            *[!0-9.]*) echo "::error::non-stable version refused: ${version}"; exit 1 ;;
+          esac
+          # Resolve the tag to its immutable commit SHA (peeled if annotated)
+          sha="$(git ls-remote https://github.com/lidge-jun/opencodex.git "refs/tags/v${version}^{}" | awk '{print $1}')"
+          if [ -z "${sha}" ]; then
+            # lightweight tag: ls-remote does not emit a ^{} entry
+            sha="$(git ls-remote https://github.com/lidge-jun/opencodex.git "refs/tags/v${version}" | awk '{print $1}')"
+          fi
+          if [ -z "${sha}" ]; then
+            echo "::error::upstream tag v${version} not found"; exit 1
+          fi
+          # package.json in the tag must agree with the version
+          pkg="$(curl -fsSL "https://raw.githubusercontent.com/lidge-jun/opencodex/v${version}/package.json")"
+          actual="$(printf '%s' "${pkg}" | node -e "let r='';process.stdin.on('data',c=>r+=c).on('end',()=>process.stdout.write(JSON.parse(r).version))")"
+          if [ "${actual}" != "${version}" ]; then
+            echo "::error::tag v${version} package.json says ${actual}"; exit 1
+          fi
+          {
+            echo "version=${version}"
+            echo "commit=${sha}"
+          } >> "$GITHUB_OUTPUT"
+          echo "target: v${version} @ ${sha}"
+
+      - name: Skip if exact version already in GHCR
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version='${{ steps.resolve.outputs.version }}'
+          if gh api "orgs/${{ github.repository_owner }}/packages/container/opencodex/versions" --paginate 2>/dev/null \
+             | grep -q '"tags".*"'"${version}"'"' ; then
+            echo "already=${version}" >> "$GITHUB_OUTPUT"
+            echo "GHCR already has ${version}; nothing to build."
+          else
+            echo "already=" >> "$GITHUB_OUTPUT"
+            echo "GHCR missing ${version}; build will run."
+          fi
+
+      - name: Call reusable build
+        if: ${{ steps.check.outputs.already == '' }}
+        uses: ./.github/workflows/build.yml
+        with:
+          version: ${{ steps.resolve.outputs.version }}
+          commit: ${{ steps.resolve.outputs.commit }}
+          publish: true
+        permissions:
+          contents: write
+          packages: write
+          id-token: write
+          attestations: write
+
+  report-failure:
+    name: Open/update failure issue
+    needs: [detect]
+    if: ${{ failure() && needs.detect.result == 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Create or update single tracking issue
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        with:
+          script: |
+            const title = `Upstream build failed: v${process.env.VERSION || 'unknown'}`;
+            const body = [
+              `Daily check-upstream run failed.`,
+              ``,
+              `| Field | Value |`,
+              `|---|---|`,
+              `| Target version | \`${process.env.VERSION || 'unresolved'}\` |`,
+              `| Workflow run | ${process.env.RUN_URL} |`,
+              `| Date | ${new Date().toISOString()} |`,
+            ].join('\n');
+            // one issue only: reuse an existing open one if present
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'upstream-build-failure',
+            });
+            if (issues.data.length > 0) {
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issues.data[0].number, body,
+              });
+              core.info(`updated issue #${issues.data[0].number}`);
+            } else {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['upstream-build-failure'],
+              });
+              core.info(`created issue #${created.data.number}`);
+            }

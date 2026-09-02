@@ -1,0 +1,20 @@
+opencodex-docker
+================
+
+Operator-owned container packaging of OpenCodex.
+
+This project builds and distributes container images of OpenCodex from
+verified upstream sources. It contains no modified OpenCodex code.
+
+Packaging: Copyright (c) 2026 opencodex-docker contributors. MIT License.
+
+Upstream software:
+  OpenCodex
+  https://github.com/lidge-jun/opencodex
+  Copyright (c) 2026 opencodex contributors
+  MIT License — https://github.com/lidge-jun/opencodex/blob/main/LICENSE
+
+Base image:
+  oven/bun (https://github.com/oven-sh/bun)
+  Published by Oven. Licensed under the MIT License;
+  image usage terms per the Docker Hub `oven/bun` repository.

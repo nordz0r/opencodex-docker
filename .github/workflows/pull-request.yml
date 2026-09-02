@@ -1,0 +1,26 @@
+# PR validation: build the current upstream stable + run the smoke suite.
+# Publishes nothing.
+name: pull-request
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'scripts/**'
+      - '.github/workflows/**'
+      - 'compose.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  test-build:
+    name: Build & smoke (no publish)
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ vars.LATEST_TEST_VERSION || '2.40.0' }}
+      commit: ${{ vars.LATEST_TEST_COMMIT || '35ff3a462e786bd5efc394dfb1a8a5cc946e454f' }}
+      publish: false
+    permissions:
+      contents: read

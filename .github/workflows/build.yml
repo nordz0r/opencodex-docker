@@ -1,0 +1,208 @@
+# Reusable build/test/publish pipeline for one verified upstream version.
+# Called by check-upstream.yml (daily/manual detection) and pull-request.yml
+# (build+smoke only, no publish).
+name: build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Upstream version, e.g. 2.40.0 (no leading v)'
+        required: true
+        type: string
+      commit:
+        description: 'Immutable upstream commit SHA for tag vX.Y.Z'
+        required: true
+        type: string
+      publish:
+        description: 'Publish to registries + create Release (false = build & smoke only)'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/opencodex
+  DOCKERHUB_IMAGE: docker.io/nordz0r/opencodex
+
+jobs:
+  build:
+    name: Build, smoke, scan, publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write        # artifact attestation
+      attestations: write    # artifact attestation
+    outputs:
+      image_ref: ${{ steps.refs.outputs.ghcr_primary }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout packaging repo
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Verify upstream tag and package.json version agreement
+        run: |
+          set -euo pipefail
+          version='${{ inputs.version }}'
+          git ls-remote --exit-code https://github.com/lidge-jun/opencodex.git "refs/tags/v${version}" >/dev/null
+          pkg="$(curl -fsSL "https://raw.githubusercontent.com/lidge-jun/opencodex/v${version}/package.json")"
+          actual="$(printf '%s' "$pkg" | node -e "let r='';process.stdin.on('data',c=>r+=c).on('end',()=>process.stdout.write(JSON.parse(r).version))")"
+          if [ "${actual}" != "${version}" ]; then
+            echo "::error::package.json version ${actual} != tag version ${version}"
+            exit 1
+          fi
+          echo "verified upstream v${version} @ ${{ inputs.commit }}"
+
+      - name: Compute all image refs and tags
+        id: refs
+        run: |
+          set -euo pipefail
+          version='${{ inputs.version }}'
+          major="${version%%.*}"
+          rest="${version#*.}"
+          minor="${rest%%.*}"
+          suffix="rc-${{ github.run_id }}"
+          tags_list=""
+          if [ '${{ inputs.publish }}' = 'true' ]; then
+            tags_list="${version}|v${version}|${major}.${minor}|${major}|latest"
+          else
+            tags_list="rc-${version}-${suffix}"
+          fi
+          {
+            echo "ghcr_primary=ghcr.io/nordz0r/opencodex:${version}"
+            echo "tags<<EOF"
+            printf '%s\n' ${tags_list//|/ } | while IFS= read -r tag; do
+              echo "ghcr.io/nordz0r/opencodex:${tag}"
+              echo "docker.io/nordz0r/opencodex:${tag}"
+            done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: ${{ inputs.publish }}
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: ${{ inputs.publish }}
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      # Single-arch amd64 build first: smoke + scan must gate publishing.
+      - name: Build amd64 for smoke/scan
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          build-args: |
+            UPSTREAM_VERSION=${{ inputs.version }}
+            UPSTREAM_COMMIT=${{ inputs.commit }}
+          tags: opencodex-smoke:amd64
+          cache-from: type=gha,scope=ocx-${{ inputs.version }}
+          cache-to: type=gha,mode=max,scope=ocx-${{ inputs.version }}
+
+      - name: Smoke test (healthz, readyz, negative auth, non-root)
+        run: bash scripts/smoke-test.sh opencodex-smoke:amd64
+
+      - name: Trivy vulnerability scan (CRITICAL + fixable HIGH block)
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: opencodex-smoke:amd64
+          format: table
+          exit-code: '1'
+          ignore-unfixed: 'true'
+          severity: CRITICAL,HIGH
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@da167eac915b4e86f08b264dbdbc867b61be6f0c # v0.20.5
+        with:
+          image: opencodex-smoke:amd64
+          format: spdx-json
+          artifact-name: sbom-opencodex-${{ inputs.version }}.spdx.json
+
+      # Multi-arch push: exact tags only. Moving convenience tags are added by
+      # a second push whose manifest inherits the same digest base; production
+      # consumers always pin image@sha256:<digest>.
+      - name: Push multi-arch image
+        if: ${{ inputs.publish }}
+        id: push
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            UPSTREAM_VERSION=${{ inputs.version }}
+            UPSTREAM_COMMIT=${{ inputs.commit }}
+          tags: ${{ steps.refs.outputs.tags }}
+          cache-from: type=gha,scope=ocx-${{ inputs.version }}
+          cache-to: type=gha,mode=max,scope=ocx-${{ inputs.version }}
+
+      - name: Artifact attestation for GHCR digest
+        if: ${{ inputs.publish }}
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-name: ghcr.io/nordz0r/opencodex
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  release:
+    name: GitHub Release
+    if: ${{ inputs.publish }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create release with image digest evidence
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const version = '${{ inputs.version }}';
+            const commit = '${{ inputs.commit }}';
+            const digest = '${{ needs.build.outputs.digest }}';
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const body = [
+              `Packaged upstream release: https://github.com/lidge-jun/opencodex/releases/tag/v${version}`,
+              ``,
+              `| Field | Value |`,
+              `|---|---|`,
+              `| Upstream version | \`${version}\` |`,
+              `| Upstream commit | \`${commit}\` |`,
+              `| Image (GHCR, immutable digest) | \`ghcr.io/${owner}/opencodex@${digest}\` |`,
+              `| Image (Docker Hub) | \`nordz0r/opencodex:${version}\` |`,
+              `| Platforms | linux/amd64, linux/arm64 |`,
+              `| Smoke | /healthz, /readyz, anonymous /v1/catalog rejection, non-root UID |`,
+              `| SBOM | SPDX (workflow artifact) |`,
+              `| Attestation | \`gh attestation verify oci://ghcr.io/${owner}/opencodex@${digest} -R ${owner}/${repo}\` |`,
+              ``,
+              `Upstream changelog is not copied here; see the upstream release page.`
+            ].join('\n');
+            await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name: `v${version}`,
+              name: `v${version}`,
+              body,
+              target_commitish: context.sha,
+              generate_release_notes: false,
+            });
