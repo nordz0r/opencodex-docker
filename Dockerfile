@@ -53,6 +53,8 @@ COPY --from=build --chown=bun:bun /tmp/opencodex-src/node_modules ./node_modules
 COPY --from=build --chown=bun:bun /tmp/opencodex-src/src ./src
 COPY --from=build --chown=bun:bun /tmp/opencodex-src/gui/dist ./gui/dist
 COPY --from=build --chown=bun:bun /tmp/opencodex-src/bin ./bin
+COPY --chown=bun:bun scripts/docker-entrypoint.sh ./docker-entrypoint.sh
+RUN chmod +x ./docker-entrypoint.sh
 
 # OCI provenance labels: where the code came from, exactly.
 LABEL org.opencontainers.image.title="opencodex" \
@@ -73,4 +75,5 @@ EXPOSE 10100
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD ["bun", "-e", "const r=await fetch('http://127.0.0.1:10100/healthz');if(!r.ok)process.exit(1)"]
 
+ENTRYPOINT ["/home/bun/app/docker-entrypoint.sh"]
 CMD ["bun", "run", "src/cli/index.ts", "start", "--port", "10100"]

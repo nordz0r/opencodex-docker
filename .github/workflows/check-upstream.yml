@@ -27,10 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write       # needed by the nested reusable build (GHCR push)
-      issues: write         # failure tracking issue
-      id-token: write       # artifact attestation
-      attestations: write   # artifact attestation
+      packages: read
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       commit: ${{ steps.resolve.outputs.commit }}
@@ -78,8 +75,14 @@ jobs:
         run: |
           set -euo pipefail
           version='${{ steps.resolve.outputs.version }}'
-          if gh api "orgs/${{ github.repository_owner }}/packages/container/opencodex/versions" --paginate 2>/dev/null \
-             | grep -q '"tags".*"'"${version}"'"' ; then
+          owner='${{ github.repository_owner }}'
+          # Check user container packages
+          has_tag=""
+          versions_json="$(gh api "users/${owner}/packages/container/opencodex/versions" --paginate 2>/dev/null || true)"
+          if [ -n "${versions_json}" ] && echo "${versions_json}" | grep -q '"tags".*"'"${version}"'"' ; then
+            has_tag="${version}"
+          fi
+          if [ -n "${has_tag}" ]; then
             echo "already=${version}" >> "$GITHUB_OUTPUT"
             echo "GHCR already has ${version}; nothing to build."
           else
@@ -87,18 +90,26 @@ jobs:
             echo "GHCR missing ${version}; build will run."
           fi
 
-      - name: Call reusable build
-        if: ${{ steps.check.outputs.already == '' }}
-        uses: ./.github/workflows/build.yml
-        with:
-          version: ${{ steps.resolve.outputs.version }}
-          commit: ${{ steps.resolve.outputs.commit }}
-          publish: true
+  build:
+    name: Build & publish
+    needs: [detect]
+    if: ${{ needs.detect.outputs.already_published == '' }}
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.detect.outputs.version }}
+      commit: ${{ needs.detect.outputs.commit }}
+      publish: true
+    secrets: inherit
 
   report-failure:
     name: Open/update failure issue
-    needs: [detect]
-    if: ${{ failure() && needs.detect.result == 'failure' }}
+    needs: [detect, build]
+    if: ${{ always() && (needs.detect.result == 'failure' || needs.build.result == 'failure') }}
     runs-on: ubuntu-latest
     permissions:
       issues: write
