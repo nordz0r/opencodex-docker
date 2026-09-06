@@ -1,4 +1,4 @@
-# Daily upstream version detection. Resolves the stable version from npm
+# Hourly upstream version detection. Resolves the stable version from npm
 # dist-tag `latest`, verifies the signed upstream git tag and package.json
 # agreement, skips if GHCR already has that exact tag (idempotent), and
 # otherwise triggers the reusable build with the immutable commit SHA.
@@ -6,7 +6,7 @@ name: check-upstream
 
 on:
   schedule:
-    - cron: '23 4 * * *'   # daily, off the :00/:30 marks
+    - cron: '23 * * * *'   # hourly, off the :00/:30 marks
   workflow_dispatch:
     inputs:
       version:
