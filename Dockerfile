@@ -68,21 +68,17 @@ RUN apt-get update \
 # Install official AI coding CLIs into global PATH (always latest releases):
 #   1. codex: @openai/codex@latest
 #   2. claude: @anthropic-ai/claude-code@latest
-#   3. grok: official xAI standalone multi-arch binary (dynamically resolves latest stable channel)
-ARG TARGETARCH
+#   3. grok: @xai-official/grok — official npm distribution; its postinstall extracts
+#      the per-platform binary into $GROK_HOME/bin (i.e. /home/bun/.grok/bin for the
+#      `bun` runtime user) and creates the `grok` symlink there. Its dist-tag `latest`
+#      currently lags the real stable channel (0.1.4 vs 1.0.x), so pin the rolling
+#      major with a range: every 1.x release installs.
 RUN npm install -g @openai/codex@latest @anthropic-ai/claude-code@latest \
-    && rm -rf /root/.npm \
-    && arch="$(dpkg --print-architecture)" \
-    && if [ "${arch}" = "amd64" ]; then grok_arch="x86_64"; elif [ "${arch}" = "arm64" ]; then grok_arch="aarch64"; else echo "unsupported arch: ${arch}" >&2; exit 1; fi \
-    && grok_url="$(curl -fsSL https://x.ai/cli/stable 2>/dev/null || curl -fsSL https://storage.googleapis.com/grok-build-public-artifacts/cli/stable)" \
-    && grok_ver="$(printf '%s' "${grok_url}" | tr -d '\r' | head -n1 | tr -d '[:space:]')" \
-    && echo "Resolved latest Grok CLI version: ${grok_ver} for ${grok_arch}" \
-    && curl -fsSL "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-${grok_ver}-linux-${grok_arch}.zst" -o /tmp/grok.zst \
-    && zstd -d /tmp/grok.zst -o /usr/local/bin/grok \
-    && chmod +x /usr/local/bin/grok \
-    && ln -s /usr/local/bin/grok /usr/local/bin/agent \
-    && rm -f /tmp/grok.zst \
-    && /usr/local/bin/grok --version
+    && npm install -g "@xai-official/grok@^1.0.0" \
+    && rm -rf /root/.npm /home/bun/.npm \
+    && ln -sf /home/bun/.grok/bin/grok /usr/local/bin/grok \
+    && ln -sf /usr/local/bin/grok /usr/local/bin/agent \
+    && grok --version
 
 WORKDIR /home/bun/app
 
