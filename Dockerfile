@@ -68,14 +68,15 @@ RUN apt-get update \
 # Install official AI coding CLIs into global PATH (always latest releases):
 #   1. codex: @openai/codex@latest
 #   2. claude: @anthropic-ai/claude-code@latest
-#   3. grok: @xai-official/grok — official npm distribution; its postinstall extracts
-#      the per-platform binary into $GROK_HOME/bin (i.e. /home/bun/.grok/bin for the
-#      `bun` runtime user) and creates the `grok` symlink there. Its dist-tag `latest`
-#      currently lags the real stable channel (0.1.4 vs 1.0.x), so pin the rolling
-#      major with a range: every 1.x release installs.
+#   3. grok: @xai-official/grok — official npm distribution. Its postinstall extracts
+#      the per-platform binary into $GROK_HOME/bin; we pin GROK_HOME to the runtime
+#      user's home (/home/bun/.grok) so the binary survives on the state volume and
+#      is reachable by the non-root `bun` user. Dist-tag `latest` still points at the
+#      legacy 0.1.4 line, so a rolling `^1.0.0` range picks up the current stable.
 RUN npm install -g @openai/codex@latest @anthropic-ai/claude-code@latest \
-    && npm install -g "@xai-official/grok@^1.0.0" \
+    && GROK_HOME=/home/bun/.grok npm install -g "@xai-official/grok@^1.0.0" \
     && rm -rf /root/.npm /home/bun/.npm \
+    && chmod -R a+rX /home/bun/.grok \
     && ln -sf /home/bun/.grok/bin/grok /usr/local/bin/grok \
     && ln -sf /usr/local/bin/grok /usr/local/bin/agent \
     && grok --version
