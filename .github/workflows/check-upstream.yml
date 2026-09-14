@@ -72,15 +72,22 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Set to a non-empty value to force a rebuild of an already-published
+          # version (e.g. after changing the Dockerfile packaging itself).
+          FORCE_REBUILD: ${{ vars.OCX_FORCE_REBUILD || '' }}
         run: |
           set -euo pipefail
           version='${{ steps.resolve.outputs.version }}'
           owner='${{ github.repository_owner }}'
           # Check user container packages
           has_tag=""
+          if [ -n "${FORCE_REBUILD}" ]; then
+            echo "FORCE_REBUILD is set; skipping the already-published check."
+          else
           versions_json="$(gh api "users/${owner}/packages/container/opencodex/versions" --paginate 2>/dev/null || true)"
-          if [ -n "${versions_json}" ] && echo "${versions_json}" | grep -q '"tags".*"'"${version}"'"' ; then
+          if [ -n "${versions_json}" ] && echo "${versions_json}" | grep -q '"tags".*'"${version}"'' ; then
             has_tag="${version}"
+          fi
           fi
           if [ -n "${has_tag}" ]; then
             echo "already=${version}" >> "$GITHUB_OUTPUT"
