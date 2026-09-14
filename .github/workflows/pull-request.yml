@@ -10,12 +10,18 @@ on:
       - 'scripts/**'
       - '.github/workflows/**'
       - 'compose.yaml'
+      - 'docker-compose.yaml'
 
 jobs:
   test-build:
     name: Build & smoke (no publish)
     uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     with:
-      version: '2.40.0'
-      commit: '35ff3a462e786bd5efc394dfb1a8a5cc946e454f'
+      version: '2.54.0'
+      commit: '979b005c219468903cff9c5cf3276eb15caad3fa'
       publish: false
