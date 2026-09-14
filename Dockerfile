@@ -65,16 +65,18 @@ RUN apt-get update \
          ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install official AI coding CLIs into global PATH:
-#   1. codex: @openai/codex
-#   2. claude: @anthropic-ai/claude-code
-#   3. grok: official xAI standalone multi-arch binary (linux-x86_64 / linux-aarch64)
+# Install official AI coding CLIs into global PATH (always latest releases):
+#   1. codex: @openai/codex@latest
+#   2. claude: @anthropic-ai/claude-code@latest
+#   3. grok: official xAI standalone multi-arch binary (dynamically resolves latest stable channel)
 ARG TARGETARCH
-ARG GROK_VERSION=1.0.30
-RUN npm install -g @openai/codex @anthropic-ai/claude-code \
+RUN npm install -g @openai/codex@latest @anthropic-ai/claude-code@latest \
     && rm -rf /root/.npm \
     && GROK_ARCH="$(case \"${TARGETARCH:-$(dpkg --print-architecture)}\" in amd64) echo x86_64 ;; arm64) echo aarch64 ;; *) echo \"unsupported: ${TARGETARCH}\" >&2; exit 1 ;; esac)" \
-    && curl -fsSL "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-${GROK_VERSION}-linux-${GROK_ARCH}.zst" -o /tmp/grok.zst \
+    && GROK_LATEST_URL="$(curl -fsSL https://x.ai/cli/stable 2>/dev/null || curl -fsSL https://storage.googleapis.com/grok-build-public-artifacts/cli/stable)" \
+    && GROK_VER="$(printf '%s' "${GROK_LATEST_URL}" | tr -d '\r' | head -n1 | tr -d '[:space:]')" \
+    && echo "Resolved latest Grok CLI version: ${GROK_VER} for ${GROK_ARCH}" \
+    && curl -fsSL "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-${GROK_VER}-linux-${GROK_ARCH}.zst" -o /tmp/grok.zst \
     && zstd -d /tmp/grok.zst -o /usr/local/bin/grok \
     && chmod +x /usr/local/bin/grok \
     && ln -s /usr/local/bin/grok /usr/local/bin/agent \
