@@ -1,0 +1,40 @@
+services:
+  # OpenCodex Hub — unified AI provider proxy with embedded coding CLIs (codex, claude, grok)
+  hub:
+    image: nordz0r/opencodex:v2.54.0
+    # Or build locally from source:
+    # build:
+    #   context: .
+    #   args:
+    #     UPSTREAM_VERSION: "2.54.0"
+    #     UPSTREAM_COMMIT: "979b005c219468903cff9c5cf3276eb15caad3fa"
+    container_name: opencodex-hub
+    restart: unless-stopped
+    ports:
+      # Data plane only: OpenAI-compatible proxy (10100)
+      # Management API (10101) stays loopback-internal inside the container
+      - "127.0.0.1:10100:10100"
+    environment:
+      - NODE_ENV=production
+      - OPENCODEX_HOME=/home/bun/.opencodex
+      - CODEX_HOME=/home/bun/.opencodex/codex-home
+      # Optional: set an explicit API token for proxy requests
+      # - OPENCODEX_API_AUTH_TOKEN=your-secret-token
+    volumes:
+      # Persistent state for accounts, catalog, and CLI home directories
+      - ocx-state:/home/bun/.opencodex
+      - ocx-codex:/home/bun/.codex
+      - ocx-claude:/home/bun/.claude
+      - ocx-grok:/home/bun/.grok
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+
+volumes:
+  ocx-state:
+    name: opencodex-state
+  ocx-codex:
+    name: opencodex-codex-home
+  ocx-claude:
+    name: opencodex-claude-home
+  ocx-grok:
+    name: opencodex-grok-home

@@ -46,7 +46,33 @@ RUN rm -rf /tmp/opencodex-src/node_modules/@typescript /tmp/opencodex-src/node_m
 
 FROM ${BUN_IMAGE} AS runtime
 # Apply Debian security updates to patch base image CVEs (e.g. openssl, util-linux)
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+# Install nodejs, npm, zstd, and ca-certificates for coding CLI runtimes (codex, claude, grok)
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+         nodejs \
+         npm \
+         zstd \
+         curl \
+         ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install official AI coding CLIs into global PATH:
+#   1. codex: @openai/codex
+#   2. claude: @anthropic-ai/claude-code
+#   3. grok: official xAI standalone multi-arch binary (linux-x86_64 / linux-aarch64)
+ARG TARGETARCH
+ARG GROK_VERSION=1.0.30
+RUN npm install -g @openai/codex @anthropic-ai/claude-code \
+    && rm -rf /root/.npm \
+    && GROK_ARCH="$(case \"${TARGETARCH:-$(dpkg --print-architecture)}\" in amd64) echo x86_64 ;; arm64) echo aarch64 ;; *) echo \"unsupported: ${TARGETARCH}\" >&2; exit 1 ;; esac)" \
+    && curl -fsSL "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-${GROK_VERSION}-linux-${GROK_ARCH}.zst" -o /tmp/grok.zst \
+    && zstd -d /tmp/grok.zst -o /usr/local/bin/grok \
+    && chmod +x /usr/local/bin/grok \
+    && ln -s /usr/local/bin/grok /usr/local/bin/agent \
+    && rm -f /tmp/grok.zst \
+    && /usr/local/bin/grok --version
+
 WORKDIR /home/bun/app
 
 ARG UPSTREAM_VERSION

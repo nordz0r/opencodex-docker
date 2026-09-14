@@ -86,4 +86,13 @@ if [ -n "${label_version}" ]; then
   echo "[smoke] PASS version label ${label_version}"
 fi
 
+echo "[smoke] checking embedded coding CLIs (codex, claude, grok)"
+for tool in codex claude grok; do
+  if ! docker exec "${CTR}" which "${tool}" >/dev/null 2>&1; then
+    echo "[smoke] FATAL: embedded CLI '${tool}' not found in PATH" >&2
+    exit 1
+  fi
+  echo "[smoke] PASS CLI ${tool} is present in PATH"
+done
+
 echo "[smoke] ALL CHECKS PASSED for ${IMAGE}"
