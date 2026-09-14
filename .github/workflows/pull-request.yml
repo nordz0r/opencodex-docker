@@ -25,3 +25,4 @@ jobs:
       version: '2.54.0'
       commit: '979b005c219468903cff9c5cf3276eb15caad3fa'
       publish: false
+    secrets: inherit
