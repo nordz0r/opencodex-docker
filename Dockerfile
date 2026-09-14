@@ -72,11 +72,12 @@ RUN apt-get update \
 ARG TARGETARCH
 RUN npm install -g @openai/codex@latest @anthropic-ai/claude-code@latest \
     && rm -rf /root/.npm \
-    && GROK_ARCH="$(case \"${TARGETARCH:-$(dpkg --print-architecture)}\" in amd64) echo x86_64 ;; arm64) echo aarch64 ;; *) echo \"unsupported: ${TARGETARCH}\" >&2; exit 1 ;; esac)" \
-    && GROK_LATEST_URL="$(curl -fsSL https://x.ai/cli/stable 2>/dev/null || curl -fsSL https://storage.googleapis.com/grok-build-public-artifacts/cli/stable)" \
-    && GROK_VER="$(printf '%s' "${GROK_LATEST_URL}" | tr -d '\r' | head -n1 | tr -d '[:space:]')" \
-    && echo "Resolved latest Grok CLI version: ${GROK_VER} for ${GROK_ARCH}" \
-    && curl -fsSL "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-${GROK_VER}-linux-${GROK_ARCH}.zst" -o /tmp/grok.zst \
+    && arch="$(dpkg --print-architecture)" \
+    && if [ "${arch}" = "amd64" ]; then grok_arch="x86_64"; elif [ "${arch}" = "arm64" ]; then grok_arch="aarch64"; else echo "unsupported arch: ${arch}" >&2; exit 1; fi \
+    && grok_url="$(curl -fsSL https://x.ai/cli/stable 2>/dev/null || curl -fsSL https://storage.googleapis.com/grok-build-public-artifacts/cli/stable)" \
+    && grok_ver="$(printf '%s' "${grok_url}" | tr -d '\r' | head -n1 | tr -d '[:space:]')" \
+    && echo "Resolved latest Grok CLI version: ${grok_ver} for ${grok_arch}" \
+    && curl -fsSL "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-${grok_ver}-linux-${grok_arch}.zst" -o /tmp/grok.zst \
     && zstd -d /tmp/grok.zst -o /usr/local/bin/grok \
     && chmod +x /usr/local/bin/grok \
     && ln -s /usr/local/bin/grok /usr/local/bin/agent \
