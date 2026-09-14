@@ -72,9 +72,11 @@ RUN apt-get update \
 #      the per-platform binary into $GROK_HOME/bin; we pin GROK_HOME to the runtime
 #      user's home (/home/bun/.grok) so the binary survives on the state volume and
 #      is reachable by the non-root `bun` user. Dist-tag `latest` still points at the
-#      legacy 0.1.4 line, so a rolling `^1.0.0` range picks up the current stable.
+#      retired 0.1.4 line, so the version is resolved at build time to the newest
+#      published 1.x release (the active stable channel) — no hardcoded version.
 RUN npm install -g @openai/codex@latest @anthropic-ai/claude-code@latest \
-    && GROK_HOME=/home/bun/.grok npm install -g "@xai-official/grok@^1.0.0" \
+    && GROK_VERSION="$(npm view '@xai-official/grok@>=1.0.0 <2.0.0' version --json | grep -oE '\"[0-9]+\.[0-9]+\.[0-9]+\"' | tail -1 | tr -d '\"')" \
+    && GROK_HOME=/home/bun/.grok npm install -g "@xai-official/grok@${GROK_VERSION}" \
     && rm -rf /root/.npm /home/bun/.npm \
     && chmod -R a+rX /home/bun/.grok \
     && ln -sf /home/bun/.grok/bin/grok /usr/local/bin/grok \
