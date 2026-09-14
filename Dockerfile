@@ -19,14 +19,22 @@ WORKDIR /home/bun/app
 
 # Upstream sources are fetched from the exact verified tag; the build context carries
 # only this packaging repo (workflows, scripts, docs) — never a modified copy of OpenCodex.
-ARG UPSTREAM_VERSION
+# If UPSTREAM_VERSION is not provided, defaults to the latest stable tag (auto-resolved).
+ARG UPSTREAM_VERSION=latest
 ARG UPSTREAM_COMMIT
-RUN git clone --depth 1 --branch "v${UPSTREAM_VERSION}" \
-      https://github.com/lidge-jun/opencodex.git /tmp/opencodex-src \
+RUN set -euo pipefail \
+    && if [ "${UPSTREAM_VERSION}" = "latest" ]; then \
+         UPSTREAM_VERSION="$(curl -fsSL https://registry.npmjs.org/@bitkyc08%2Fopencodex/latest | node -e 'let r=\"\";process.stdin.on(\"data\",c=>r+=c).on(\"end\",()=>{const p=JSON.parse(r);process.stdout.write(p.version)})')"; \
+         echo "Resolved latest upstream version: v${UPSTREAM_VERSION}"; \
+       fi \
+    && git clone --depth 1 --branch "v${UPSTREAM_VERSION}" \
+         https://github.com/lidge-jun/opencodex.git /tmp/opencodex-src \
     && cd /tmp/opencodex-src \
     && test "$(node -p "require('./package.json').version")" = "${UPSTREAM_VERSION}" \
-    && test "$(git rev-parse HEAD)" = "${UPSTREAM_COMMIT}" \
-    && echo "upstream verified: v${UPSTREAM_VERSION} @ ${UPSTREAM_COMMIT}"
+    && if [ -n "${UPSTREAM_COMMIT:-}" ]; then \
+         test "$(git rev-parse HEAD)" = "${UPSTREAM_COMMIT}"; \
+       fi \
+    && echo "upstream verified: v${UPSTREAM_VERSION} @ $(git rev-parse HEAD)"
 
 COPY --chown=bun:bun scripts/verify-version.sh /tmp/verify-version.sh
 RUN chmod +x /tmp/verify-version.sh

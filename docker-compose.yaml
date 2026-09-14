@@ -2,14 +2,8 @@ services:
   # OpenCodex Hub — unified AI provider proxy with embedded coding CLIs (codex, claude, grok)
   hub:
     image: nordz0r/opencodex:latest
-    # Local build support:
-    #   docker compose build
-    #   docker compose up --build -d
-    build:
-      context: .
-      args:
-        UPSTREAM_VERSION: "2.54.0"
-        UPSTREAM_COMMIT: "979b005c219468903cff9c5cf3276eb15caad3fa"
+    # Local build without args — automatically clones latest stable upstream:
+    build: .
     container_name: opencodex-hub
     restart: unless-stopped
     ports:
