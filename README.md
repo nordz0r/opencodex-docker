@@ -12,13 +12,13 @@ match. OpenCodex upstream publishes no official image; this follows the
 
 ## Published images
 
-`docker run ghcr.io/nordz0r/opencodex:2.40.0` — exact tags are immutable and
+`docker run ghcr.io/nordz0r/opencodex:2.57.0` — exact tags are immutable and
 built from a verified upstream release.
 
 | Tag pattern | Example | Meaning |
 |---|---|---|
-| `X.Y.Z` / `vX.Y.Z` | `2.40.0`, `v2.40.0` | immutable, matches upstream release |
-| `X.Y`, `X`, `latest` | `2.40`, `2`, `latest` | moving convenience tags |
+| `X.Y.Z` / `vX.Y.Z` | `2.57.0`, `v2.57.0` | immutable, matches upstream release |
+| `X.Y`, `X`, `latest` | `2.57`, `2`, `latest` | moving convenience tags |
 
 Production deployments should pin the full digest:
 `ghcr.io/nordz0r/opencodex@sha256:<digest>`.
@@ -29,16 +29,19 @@ and an SPDX SBOM. Verify:
 
 ```bash
 gh attestation verify \
-  oci://ghcr.io/nordz0r/opencodex:2.40.0 \
+  oci://ghcr.io/nordz0r/opencodex:2.57.0 \
   -R nordz0r/opencodex-docker
 ```
 
 ## What the image guarantees
 
 - **Non-root** (`USER bun`), read-only-rootfs compatible; only
-  `/home/bun/.opencodex` (state volume) and `/tmp` are writable.
+  `/home/bun/.opencodex`, `/home/bun/.codex` (state volumes) and `/tmp` are writable.
 - **Multi-arch**: `linux/amd64` and `linux/arm64` from the pinned
   `oven/bun:1.4.0@sha256:<digest>` base.
+- **Embedded CLIs**: `codex`, `claude`, `grok`, `omp` (`@oh-my-pi/pi-coding-agent`).
+- **Upstream container contract**: `OCX_SERVICE=1`, separate `CODEX_HOME`,
+  compatibility-version gate (`docker/verify-compatibility.ts`).
 - **Version provenance in OCI labels**: upstream version, exact commit, source
   URL, license.
 - **No credentials inside**: no `auth.json`, no tokens, no `.env`; the data
@@ -63,7 +66,8 @@ curl -fsS http://127.0.0.1:10100/readyz
 ```
 
 See [`compose.yaml`](compose.yaml) for the full definition — read-only rootfs,
-tmpfs `/tmp`, named state volume, and the token mounted as a Docker secret.
+tmpfs `/tmp`, named state volumes (`OPENCODEX_HOME` + `CODEX_HOME`),
+`cap_drop: ALL`, and the token mounted as a Docker secret.
 
 ## Upstream verification chain
 

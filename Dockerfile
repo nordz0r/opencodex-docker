@@ -49,12 +49,19 @@ RUN bun update fast-uri
 # Build the GUI (vite) exactly as upstream's own `build:gui` does.
 RUN cd gui && bun install --frozen-lockfile && bun run build
 
+# Upstream source-build Dockerfile requires this Git-tracked-source hash
+# (scripts/generate-compatibility-version.ts). Generate it here from the cloned
+# tag so runtime verify-compatibility.ts can fail the image if src/ drifts.
+RUN bun scripts/generate-compatibility-version.ts \
+    && bun docker/verify-compatibility.ts /tmp/opencodex-src
+
 # Remove development-only toolchains containing native binaries (e.g. tsc) before copying to runtime
 RUN rm -rf /tmp/opencodex-src/node_modules/@typescript /tmp/opencodex-src/node_modules/typescript
 
 FROM ${BUN_IMAGE} AS runtime
 # Apply Debian security updates to patch base image CVEs (e.g. openssl, util-linux)
-# Install nodejs, npm, zstd, and ca-certificates for coding CLI runtimes (codex, claude, grok)
+# Install nodejs, npm, zstd, and ca-certificates for coding CLI runtimes
+# (codex, claude, grok, omp)
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
@@ -74,23 +81,35 @@ RUN apt-get update \
 #      is reachable by the non-root `bun` user. Dist-tag `latest` still points at the
 #      retired 0.1.4 line, so the version is resolved at build time to the newest
 #      published 1.x release (the active stable channel) — no hardcoded version.
+#   4. omp (oh-my-pi): @oh-my-pi/pi-coding-agent — bin is `omp` (dist/cli.js).
+#      Official install is `bun install -g`; npm -g matches the other CLIs here.
 RUN npm install -g @openai/codex@latest @anthropic-ai/claude-code@latest \
+        @oh-my-pi/pi-coding-agent@latest \
     && GROK_VERSION="$(npm view '@xai-official/grok@>=1.0.0 <2.0.0' version --json | grep -oE '\"[0-9]+\.[0-9]+\.[0-9]+\"' | tail -1 | tr -d '\"')" \
     && GROK_HOME=/home/bun/.grok npm install -g "@xai-official/grok@${GROK_VERSION}" \
     && rm -rf /root/.npm /home/bun/.npm \
     && chmod -R a+rX /home/bun/.grok \
     && ln -sf /home/bun/.grok/bin/grok /usr/local/bin/grok \
     && ln -sf /usr/local/bin/grok /usr/local/bin/agent \
-    && grok --version
+    && grok --version \
+    && omp --version
 
 WORKDIR /home/bun/app
 
 ARG UPSTREAM_VERSION
 ARG UPSTREAM_COMMIT
 
-ENV OPENCODEX_HOME=/home/bun/.opencodex \
-    OCX_API_TOKEN_FILE=/run/secrets/ocx_api_token \
-    NODE_ENV=production
+# Docker supervises this foreground process (upstream OCX_SERVICE=1).
+# OPENCODEX_HOME and CODEX_HOME use incompatible auth.json formats — keep
+# both directories. Production k3s remaps CODEX_HOME onto the state PVC
+# (`/home/bun/.opencodex/codex-home`); the image default matches upstream.
+# Token path stays the Docker-secret mount used by compose.yaml / k3s VSO;
+# do not copy upstream's /home/bun/.opencodex/service-api-token default.
+ENV NODE_ENV=production \
+    OCX_SERVICE=1 \
+    OPENCODEX_HOME=/home/bun/.opencodex \
+    CODEX_HOME=/home/bun/.codex \
+    OCX_API_TOKEN_FILE=/run/secrets/ocx_api_token
 
 COPY --from=build --chown=bun:bun /tmp/opencodex-src/package.json ./package.json
 COPY --from=build --chown=bun:bun /tmp/opencodex-src/bun.lock ./bun.lock
@@ -98,14 +117,17 @@ COPY --from=build --chown=bun:bun /tmp/opencodex-src/node_modules ./node_modules
 COPY --from=build --chown=bun:bun /tmp/opencodex-src/src ./src
 COPY --from=build --chown=bun:bun /tmp/opencodex-src/gui/dist ./gui/dist
 COPY --from=build --chown=bun:bun /tmp/opencodex-src/bin ./bin
+COPY --from=build --chown=bun:bun /tmp/opencodex-src/docker ./docker
 COPY --chown=bun:bun scripts/docker-entrypoint.sh ./docker-entrypoint.sh
-RUN chmod +x ./docker-entrypoint.sh \
-    && mkdir -p /home/bun/.opencodex \
+RUN mkdir -p /home/bun/app/scripts \
+    && chmod +x ./docker-entrypoint.sh \
+    && install -d -m 0700 -o bun -g bun /home/bun/.opencodex /home/bun/.codex \
     && chown -R bun:bun /home/bun
+COPY --from=build --chown=bun:bun /tmp/opencodex-src/scripts/model-metadata.source.json ./scripts/model-metadata.source.json
 
 # OCI provenance labels: where the code came from, exactly.
 LABEL org.opencontainers.image.title="opencodex" \
-      org.opencontainers.image.description="Universal provider proxy for OpenAI Codex, Claude Code, Claude Desktop & Grok Build" \
+      org.opencontainers.image.description="Universal provider proxy for OpenAI Codex, Claude Code, Claude Desktop, Grok Build & omp (oh-my-pi)" \
       org.opencontainers.image.url="https://opencodex.me/" \
       org.opencontainers.image.source="https://github.com/lidge-jun/opencodex" \
       org.opencontainers.image.version="${UPSTREAM_VERSION}" \
@@ -115,11 +137,16 @@ LABEL org.opencontainers.image.title="opencodex" \
 
 USER bun
 
-VOLUME ["/home/bun/.opencodex"]
+# Fail the image if the cloned src tree does not match the generated
+# compatibility manifest (same gate as upstream's source-build Dockerfile).
+RUN ["bun", "docker/verify-compatibility.ts"]
+RUN ["bun", "-e", "import { readOpenCodexCompatibilityVersion } from './src/routing/compatibility/version.ts'; if (!/^[0-9a-f]{64}$/.test(readOpenCodexCompatibilityVersion() ?? '')) throw new Error('Missing or invalid generated compatibility manifest');"]
+
+VOLUME ["/home/bun/.opencodex", "/home/bun/.codex"]
 
 EXPOSE 10100
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD ["bun", "-e", "const r=await fetch('http://127.0.0.1:10100/healthz');if(!r.ok)process.exit(1)"]
 
 ENTRYPOINT ["/home/bun/app/docker-entrypoint.sh"]

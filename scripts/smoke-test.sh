@@ -10,10 +10,12 @@ set -euo pipefail
 IMAGE="${1:?usage: smoke-test.sh <image-ref>}"
 CTR="opencodex-smoke-$$"
 STATE_VOL="opencodex-smoke-state-$$"
+CODEX_VOL="opencodex-smoke-codex-$$"
 
 cleanup() {
   docker rm -f "${CTR}" >/dev/null 2>&1 || true
   docker volume rm -f "${STATE_VOL}" >/dev/null 2>&1 || true
+  docker volume rm -f "${CODEX_VOL}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -28,6 +30,7 @@ docker run -d --name "${CTR}" \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   -e OPENCODEX_API_AUTH_TOKEN="${SMOKE_TOKEN}" \
   -v "${STATE_VOL}:/home/bun/.opencodex" \
+  -v "${CODEX_VOL}:/home/bun/.codex" \
   -p 127.0.0.1:0:10100 \
   "${IMAGE}" >/dev/null
 
@@ -86,13 +89,23 @@ if [ -n "${label_version}" ]; then
   echo "[smoke] PASS version label ${label_version}"
 fi
 
-echo "[smoke] checking embedded coding CLIs (codex, claude, grok)"
-for tool in codex claude grok; do
+echo "[smoke] checking embedded coding CLIs (codex, claude, grok, omp)"
+for tool in codex claude grok omp; do
   if ! docker exec "${CTR}" which "${tool}" >/dev/null 2>&1; then
     echo "[smoke] FATAL: embedded CLI '${tool}' not found in PATH" >&2
     exit 1
   fi
   echo "[smoke] PASS CLI ${tool} is present in PATH"
 done
+
+echo "[smoke] checking OCX_SERVICE and dual homes"
+svc="$(docker exec "${CTR}" sh -c 'printf %s "$OCX_SERVICE"')"
+if [ "${svc}" != "1" ]; then
+  echo "[smoke] FATAL: OCX_SERVICE=${svc} (expected 1)" >&2
+  exit 1
+fi
+docker exec "${CTR}" sh -c 'test -d /home/bun/.opencodex && test -d /home/bun/.codex' \
+  || { echo "[smoke] FATAL: dual homes missing" >&2; exit 1; }
+echo "[smoke] PASS OCX_SERVICE=1 and dual homes"
 
 echo "[smoke] ALL CHECKS PASSED for ${IMAGE}"

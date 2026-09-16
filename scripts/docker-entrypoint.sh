@@ -2,7 +2,8 @@
 set -euo pipefail
 
 OPENCODEX_DIR="${OPENCODEX_HOME:-/home/bun/.opencodex}"
-mkdir -p "${OPENCODEX_DIR}"
+CODEX_DIR="${CODEX_HOME:-/home/bun/.codex}"
+mkdir -p "${OPENCODEX_DIR}" "${CODEX_DIR}"
 
 CONFIG_FILE="${OPENCODEX_DIR}/config.json"
 
