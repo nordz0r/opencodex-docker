@@ -1,12 +1,12 @@
-# Hourly-ish upstream version detection (GitHub cron is ~hourly, often delayed).
-# Resolves npm dist-tag `latest`, verifies the signed git tag, skips if GHCR
-# already has that exact tag (unless OCX_FORCE_REBUILD equals that version),
-# otherwise triggers the reusable build. Not a 10-minute watcher.
+# Check npm dist-tag `latest` about every 10 minutes (GitHub cron may delay).
+# Verifies the signed git tag, skips if GHCR already has that exact tag
+# (unless OCX_FORCE_REBUILD equals that version), otherwise builds.
 name: check-upstream
 
 on:
   schedule:
-    - cron: '23 * * * *'   # hourly, off the :00/:30 marks
+    # Offset from :00 to reduce GitHub Actions schedule congestion.
+    - cron: '3,13,23,33,43,53 * * * *'
   workflow_dispatch:
     inputs:
       version:
@@ -15,7 +15,10 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
 
 concurrency:
   group: opencodex-release-${{ inputs.version || 'auto' }}
@@ -78,23 +81,27 @@ jobs:
         run: |
           set -euo pipefail
           version='${{ steps.resolve.outputs.version }}'
-          owner='${{ github.repository_owner }}'
-          # Check user container packages
           has_tag=""
           # Non-empty FORCE_REBUILD rebuilds one already-published tag. A bare
-          # "1" left from a previous packaging rebuild would rebuild EVERY hourly
-          # run (and then 422 on GitHub Release). Treat only an exact version
-          # match as a force; otherwise keep the GHCR skip.
+          # "1" left from a previous packaging rebuild would rebuild EVERY tick
+          # (and then 422 on GitHub Release). Treat only an exact version match
+          # as a force; otherwise keep the Hub skip.
           if [ -n "${FORCE_REBUILD}" ] && { [ "${FORCE_REBUILD}" = "${version}" ] || [ "${FORCE_REBUILD}" = "v${version}" ]; }; then
             echo "FORCE_REBUILD=${FORCE_REBUILD}; skipping the already-published check for ${version}."
           else
             if [ -n "${FORCE_REBUILD}" ]; then
               echo "FORCE_REBUILD=${FORCE_REBUILD} does not match ${version}; keeping GHCR skip."
             fi
-            versions_json="$(gh api "users/${owner}/packages/container/opencodex/versions" --paginate 2>/dev/null || true)"
-            if [ -n "${versions_json}" ] && echo "${versions_json}" | grep -q '"tags".*'"${version}"'' ; then
-              has_tag="${version}"
-            fi
+            # Docker Hub is public and does not need packages:read. GHCR versions
+            # API 403s on GITHUB_TOKEN without that scope and would rebuild every tick.
+            for tag in "${version}" "v${version}"; do
+              code="$(curl -sS -o /dev/null -w '%{http_code}' \
+                "https://hub.docker.com/v2/repositories/nordz0r/opencodex/tags/${tag}/" || true)"
+              if [ "${code}" = "200" ]; then
+                has_tag="${tag}"
+                break
+              fi
+            done
           fi
           if [ -n "${has_tag}" ]; then
             echo "already=${version}" >> "$GITHUB_OUTPUT"

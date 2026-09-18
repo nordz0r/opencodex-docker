@@ -12,13 +12,13 @@ match. OpenCodex upstream publishes no official image; this follows the
 
 ## Published images
 
-`docker run ghcr.io/nordz0r/opencodex:2.58.0` — exact tags are immutable and
+`docker run ghcr.io/nordz0r/opencodex:2.59.0` — exact tags are immutable and
 built from a verified upstream release.
 
 | Tag pattern | Example | Meaning |
 |---|---|---|
-| `X.Y.Z` / `vX.Y.Z` | `2.58.0`, `v2.58.0` | immutable, matches upstream release |
-| `X.Y`, `X`, `latest` | `2.58`, `2`, `latest` | moving convenience tags |
+| `X.Y.Z` / `vX.Y.Z` | `2.59.0`, `v2.59.0` | immutable, matches upstream release |
+| `X.Y`, `X`, `latest` | `2.59`, `2`, `latest` | moving convenience tags |
 
 Production deployments should pin the full digest:
 `ghcr.io/nordz0r/opencodex@sha256:<digest>`.
@@ -29,7 +29,7 @@ and an SPDX SBOM. Verify:
 
 ```bash
 gh attestation verify \
-  oci://ghcr.io/nordz0r/opencodex:2.58.0 \
+  oci://ghcr.io/nordz0r/opencodex:2.59.0 \
   -R nordz0r/opencodex-docker
 ```
 
@@ -75,7 +75,7 @@ tmpfs `/tmp`, named state volumes (`OPENCODEX_HOME` + `CODEX_HOME`),
 
 ## Upstream verification chain
 
-`check-upstream.yml` runs daily:
+`check-upstream.yml` runs about every 10 minutes (`3,13,23,33,43,53 * * * *`; GitHub may delay):
 
 1. Resolves the stable version from the npm dist-tag `latest` of
    `@bitkyc08/opencodex` (preview tags ignored).
