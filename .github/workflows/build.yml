@@ -197,12 +197,31 @@ jobs:
               ``,
               `Upstream changelog is not copied here; see the upstream release page.`
             ].join('\n');
-            await github.rest.repos.createRelease({
-              owner,
-              repo,
-              tag_name: `v${version}`,
-              name: `v${version}`,
-              body,
-              target_commitish: context.sha,
-              generate_release_notes: false,
-            });
+            const tag = `v${version}`;
+            try {
+              await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tag,
+                name: tag,
+                body,
+                target_commitish: context.sha,
+                generate_release_notes: false,
+              });
+            } catch (error) {
+              const already = error.status === 422
+                && /already_exists/.test(JSON.stringify(error.response?.data || error.message || ''));
+              if (!already) throw error;
+              // Packaging rebuilds reuse the same tag (OCX_FORCE_REBUILD). Update the
+              // existing release body with the new digest instead of failing the run.
+              const existing = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              await github.rest.repos.updateRelease({
+                owner,
+                repo,
+                release_id: existing.data.id,
+                name: tag,
+                body,
+                target_commitish: context.sha,
+              });
+              core.info(`updated existing release ${tag} (${existing.data.html_url})`);
+            }
