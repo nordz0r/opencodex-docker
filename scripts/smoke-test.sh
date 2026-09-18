@@ -108,4 +108,15 @@ docker exec "${CTR}" sh -c 'test -d /home/bun/.opencodex && test -d /home/bun/.c
   || { echo "[smoke] FATAL: dual homes missing" >&2; exit 1; }
 echo "[smoke] PASS OCX_SERVICE=1 and dual homes"
 
+echo "[smoke] checking upstream hub seed config"
+docker exec "${CTR}" sh -c 'test -f /home/bun/app/docker/config.json && test -f /home/bun/.opencodex/config.json' \
+  || { echo "[smoke] FATAL: hub seed config.json missing" >&2; exit 1; }
+role="$(docker exec "${CTR}" bun -e 'const c=JSON.parse(require("fs").readFileSync("/home/bun/.opencodex/config.json","utf8")); process.stdout.write(String(c.runtimeRole||""))')"
+host="$(docker exec "${CTR}" bun -e 'const c=JSON.parse(require("fs").readFileSync("/home/bun/.opencodex/config.json","utf8")); process.stdout.write(String(c.hostname||""))')"
+if [ "${role}" != "hub" ] || [ "${host}" != "0.0.0.0" ]; then
+  echo "[smoke] FATAL: seeded config runtimeRole=${role} hostname=${host}" >&2
+  exit 1
+fi
+echo "[smoke] PASS hub seed runtimeRole=hub hostname=0.0.0.0"
+
 echo "[smoke] ALL CHECKS PASSED for ${IMAGE}"

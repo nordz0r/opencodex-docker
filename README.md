@@ -12,13 +12,13 @@ match. OpenCodex upstream publishes no official image; this follows the
 
 ## Published images
 
-`docker run ghcr.io/nordz0r/opencodex:2.57.0` — exact tags are immutable and
+`docker run ghcr.io/nordz0r/opencodex:2.58.0` — exact tags are immutable and
 built from a verified upstream release.
 
 | Tag pattern | Example | Meaning |
 |---|---|---|
-| `X.Y.Z` / `vX.Y.Z` | `2.57.0`, `v2.57.0` | immutable, matches upstream release |
-| `X.Y`, `X`, `latest` | `2.57`, `2`, `latest` | moving convenience tags |
+| `X.Y.Z` / `vX.Y.Z` | `2.58.0`, `v2.58.0` | immutable, matches upstream release |
+| `X.Y`, `X`, `latest` | `2.58`, `2`, `latest` | moving convenience tags |
 
 Production deployments should pin the full digest:
 `ghcr.io/nordz0r/opencodex@sha256:<digest>`.
@@ -29,7 +29,7 @@ and an SPDX SBOM. Verify:
 
 ```bash
 gh attestation verify \
-  oci://ghcr.io/nordz0r/opencodex:2.57.0 \
+  oci://ghcr.io/nordz0r/opencodex:2.58.0 \
   -R nordz0r/opencodex-docker
 ```
 
@@ -41,7 +41,11 @@ gh attestation verify \
   `oven/bun:1.4.0@sha256:<digest>` base.
 - **Embedded CLIs**: `codex`, `claude`, `grok`, `omp` (`@oh-my-pi/pi-coding-agent`).
 - **Upstream container contract**: `OCX_SERVICE=1`, separate `CODEX_HOME`,
-  compatibility-version gate (`docker/verify-compatibility.ts`).
+  compatibility-version gate (`docker/verify-compatibility.ts`), hub seed
+  `docker/config.json` (`runtimeRole=hub`, `hostname=0.0.0.0`) copied only
+  when the state volume has no `config.json`. Token stays
+  `OCX_API_TOKEN_FILE=/run/secrets/ocx_api_token` (not upstream's
+  in-volume `service-api-token`).
 - **Version provenance in OCI labels**: upstream version, exact commit, source
   URL, license.
 - **No credentials inside**: no `auth.json`, no tokens, no `.env`; the data

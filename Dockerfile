@@ -123,6 +123,10 @@ RUN mkdir -p /home/bun/app/scripts \
     && chmod +x ./docker-entrypoint.sh \
     && install -d -m 0700 -o bun -g bun /home/bun/.opencodex /home/bun/.codex \
     && chown -R bun:bun /home/bun
+# Upstream hub seed (runtimeRole=hub, hostname=0.0.0.0). Empty named volumes
+# pick this up on first start; a populated k8s PVC keeps operator config —
+# entrypoint copies the same file only when config.json is missing.
+COPY --from=build --chown=bun:bun --chmod=0600 /tmp/opencodex-src/docker/config.json /home/bun/.opencodex/config.json
 COPY --from=build --chown=bun:bun /tmp/opencodex-src/scripts/model-metadata.source.json ./scripts/model-metadata.source.json
 
 # OCI provenance labels: where the code came from, exactly.
@@ -146,7 +150,7 @@ VOLUME ["/home/bun/.opencodex", "/home/bun/.codex"]
 
 EXPOSE 10100
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
   CMD ["bun", "-e", "const r=await fetch('http://127.0.0.1:10100/healthz');if(!r.ok)process.exit(1)"]
 
 ENTRYPOINT ["/home/bun/app/docker-entrypoint.sh"]

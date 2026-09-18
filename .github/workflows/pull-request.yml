@@ -22,7 +22,7 @@ jobs:
       id-token: write
       attestations: write
     with:
-      version: '2.54.0'
-      commit: '979b005c219468903cff9c5cf3276eb15caad3fa'
+      version: '2.59.0'
+      commit: '134c92a01b120162f00c7275189cc47858720379'
       publish: false
     secrets: inherit

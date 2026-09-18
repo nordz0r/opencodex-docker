@@ -6,21 +6,17 @@ CODEX_DIR="${CODEX_HOME:-/home/bun/.codex}"
 mkdir -p "${OPENCODEX_DIR}" "${CODEX_DIR}"
 
 CONFIG_FILE="${OPENCODEX_DIR}/config.json"
+SEED_FILE="/home/bun/app/docker/config.json"
 
-# In container environments, default to hub role and 0.0.0.0 bind address
-# so published container ports work out of the box.
+# Fresh volume: seed the upstream hub config (runtimeRole=hub, 0.0.0.0).
+# A populated PVC/named volume already has operator config — leave it alone.
 if [ ! -f "${CONFIG_FILE}" ]; then
-  bun -e "
-    try {
-      const { getDefaultConfig, saveConfig } = require('./src/config.ts');
-      const cfg = getDefaultConfig();
-      cfg.runtimeRole = 'hub';
-      cfg.hostname = '0.0.0.0';
-      saveConfig(cfg);
-    } catch (e) {
-      console.error('Failed to initialize default config:', e);
-    }
-  " >/dev/null 2>&1 || true
+  if [ -f "${SEED_FILE}" ]; then
+    cp -a "${SEED_FILE}" "${CONFIG_FILE}"
+  else
+    echo "opencodex: missing hub seed ${SEED_FILE}; cannot initialize ${CONFIG_FILE}" >&2
+    exit 1
+  fi
 fi
 
 exec "$@"
