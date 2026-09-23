@@ -16,8 +16,11 @@ jobs:
   test-build:
     name: Build & smoke (no publish)
     uses: ./.github/workflows/build.yml
+    # Caller must grant the UNION of permissions any nested job declares.
+    # build.yml's release job requests contents:write; GitHub validates that
+    # at graph-resolve time even when publish:false skips the job.
     permissions:
-      contents: read
+      contents: write
       packages: write
       id-token: write
       attestations: write
