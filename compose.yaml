@@ -2,9 +2,10 @@ name: opencodex
 
 services:
   hub:
-    image: ghcr.io/nordz0r/opencodex:2.59.0
-    # Prefer an exact digest in production:
+    # Moving tag: tracks the newest published upstream release (always == latest stable).
+    # Production should prefer a pinned digest:
     # image: ghcr.io/nordz0r/opencodex@sha256:<digest>
+    image: ghcr.io/nordz0r/opencodex:latest
     init: true
     read_only: true
     environment:
