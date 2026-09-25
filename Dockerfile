@@ -103,7 +103,7 @@ ARG UPSTREAM_COMMIT
 # OPENCODEX_HOME and CODEX_HOME use incompatible auth.json formats — keep
 # both directories. Production k3s remaps CODEX_HOME onto the state PVC
 # (`/home/bun/.opencodex/codex-home`); the image default matches upstream.
-# Token path stays the Docker-secret mount used by compose.yaml / k3s VSO;
+# Token path stays the Docker-secret mount used by docker run / k3s VSO;
 # do not copy upstream's /home/bun/.opencodex/service-api-token default.
 ENV NODE_ENV=production \
     OCX_SERVICE=1 \

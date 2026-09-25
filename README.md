@@ -54,24 +54,36 @@ gh attestation verify \
   is not published — bind it to loopback inside your own network namespace if
   you need it.
 
-## Quick start (docker compose)
+## Quick start (docker run)
 
 ```bash
 # 1. Generate a data-admission token (NOT a provider credential)
 export OCX_API_TOKEN=$(openssl rand -hex 32)
 mkdir -p secrets && printf '%s' "$OCX_API_TOKEN" > secrets/ocx_api_token
 
-# 2. Start (defaults to hub role + 0.0.0.0 bind on first run automatically)
-docker compose up -d
+# 2. Resolve the current published digest and run it pinned
+docker run -d --name opencodex \
+  --init --read-only \
+  --cap-drop ALL --security-opt no-new-privileges:true \
+  --tmpfs /tmp:rw,noexec,nosuid,size=64m,mode=1777 \
+  -p "${OPENCODEX_BIND_ADDRESS:-127.0.0.1}:${OPENCODEX_PORT:-10100}:10100" \
+  -e NODE_ENV=production -e OCX_SERVICE=1 \
+  -e OPENCODEX_HOME=/home/bun/.opencodex -e CODEX_HOME=/home/bun/.codex \
+  -e OCX_API_TOKEN_FILE=/run/secrets/ocx_api_token \
+  -v opencodex_ocx-state:/home/bun/.opencodex \
+  -v opencodex_codex-state:/home/bun/.codex \
+  -v ./secrets/ocx_api_token:/run/secrets/ocx_api_token:ro \
+  ghcr.io/nordz0r/opencodex@sha256:<digest>
 
 # 3. Prove readiness (healthz alone is NOT acceptance)
 curl -fsS http://127.0.0.1:10100/healthz
 curl -fsS http://127.0.0.1:10100/readyz
 ```
 
-See [`compose.yaml`](compose.yaml) for the full definition — read-only rootfs,
+The run flags mirror the retired compose stack: read-only rootfs,
 tmpfs `/tmp`, named state volumes (`OPENCODEX_HOME` + `CODEX_HOME`),
-`cap_drop: ALL`, and the token mounted as a Docker secret.
+`cap_drop: ALL`, and the token mounted read-only. Always pin the digest —
+moving tags are not supported for production consumers.
 
 ## Upstream verification chain
 

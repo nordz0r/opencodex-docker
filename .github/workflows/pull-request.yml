@@ -9,8 +9,6 @@ on:
       - 'Dockerfile'
       - 'scripts/**'
       - '.github/workflows/**'
-      - 'compose.yaml'
-      - 'docker-compose.yaml'
 
 jobs:
   test-build:
