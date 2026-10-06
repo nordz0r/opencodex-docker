@@ -49,6 +49,9 @@ RUN bun update fast-uri
 # Patch @modelcontextprotocol/sdk to >=1.31.0 within upstream "^1.30.0" (CVE-2026-104850 / GHSA-6qxp-vccf-f47h).
 RUN bun update @modelcontextprotocol/sdk@1.31.0
 
+# Patch proxy-addr to >=2.0.8 (CVE-2026-90711 / GHSA-jqcg-44mw-7w3h).
+RUN bun update proxy-addr@2.0.8
+
 # Build the GUI (vite) exactly as upstream's own `build:gui` does.
 RUN cd gui && bun install --frozen-lockfile && bun run build
 
