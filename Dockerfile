@@ -46,6 +46,12 @@ RUN --mount=type=cache,target=/home/bun/.bun/install/cache \
 # Patch fast-uri to >=3.1.6 within upstream's specified "^3.1.5" range to resolve CVE-2026-75899 et al.
 RUN bun update fast-uri
 
+# Patch @modelcontextprotocol/sdk to >=1.31.0 within upstream "^1.30.0" (CVE-2026-104850 / GHSA-6qxp-vccf-f47h).
+RUN bun update @modelcontextprotocol/sdk
+
+# Patch proxy-addr to >=2.0.8 (CVE-2026-90711 / GHSA-jqcg-44mw-7w3h).
+RUN bun update proxy-addr
+
 # Build the GUI (vite) exactly as upstream's own `build:gui` does.
 RUN cd gui && bun install --frozen-lockfile && bun run build
 
