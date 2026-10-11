@@ -275,7 +275,7 @@ gh attestation verify oci://ghcr.io/nordz0r/opencodex:2.83.0 -R nordz0r/opencode
 - **Non-root** (`USER bun`), read-only-rootfs compatible; only
   `/home/bun/.opencodex`, `/home/bun/.codex` (state volumes) and `/tmp` are writable.
 - **Multi-arch**: `linux/amd64` and `linux/arm64` from the pinned
-  `oven/bun:1.4.0@sha256:<digest>` base.
+  `oven/bun:1.4.2@sha256:<digest>` base.
 - **Embedded CLIs**: `codex`, `claude`, `grok`, `omp` (`@oh-my-pi/pi-coding-agent`).
 - **Upstream container contract**: `OCX_SERVICE=1`, separate `CODEX_HOME`,
   compatibility-version gate (`docker/verify-compatibility.ts`), hub seed

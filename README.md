@@ -274,7 +274,7 @@ gh attestation verify oci://ghcr.io/nordz0r/opencodex:2.83.0 -R nordz0r/opencode
 - **Не root** (`USER bun`), совместим с read-only rootfs; записывать можно только в
   `/home/bun/.opencodex`, `/home/bun/.codex` (тома состояния) и `/tmp`.
 - **Мультиархитектурность**: `linux/amd64` и `linux/arm64` на закреплённой базе
-  `oven/bun:1.4.0@sha256:<digest>`.
+  `oven/bun:1.4.2@sha256:<digest>`.
 - **Встроенные CLI**: `codex`, `claude`, `grok`, `omp` (`@oh-my-pi/pi-coding-agent`).
 - **Контракт контейнера upstream**: `OCX_SERVICE=1`, отдельный `CODEX_HOME`, проверка версии
   совместимости (`docker/verify-compatibility.ts`), начальный конфиг хаба `docker/config.json`
