@@ -27,6 +27,8 @@ of cloning and building. It follows the
 - 🧰 **Batteries included** — `codex`, `claude`, `grok` and `omp` CLIs embedded
 - 🔌 **[`ocx` CLI](docs/ocx-cli.en.md)** — one command to point Codex, Claude Code, Claude Desktop,
   Grok Build and Oh My Pi at your hub
+- 🧭 **[`jev-auto` combo](docs/jev-combo.en.md)** — one model for clients; Jev (TypeSafe System One)
+  picks the target and effort for every step
 
 **Contents:** [Quick start](#quick-start) · [Configuration](#configuration) ·
 [Connecting clients](#connecting-clients) · [ocx CLI](#ocx-cli) · [Upgrade](#upgrade) ·
@@ -214,6 +216,9 @@ node ocx.mjs restore --client claude             # undo
 ```
 
 Full guide: [docs/ocx-cli.en.md](docs/ocx-cli.en.md).
+
+One model, `jev-auto`, that picks the target and effort for every step via Jev (TypeSafe
+System One): [docs/jev-combo.en.md](docs/jev-combo.en.md).
 
 ## Upgrade
 
