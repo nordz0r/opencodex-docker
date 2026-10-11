@@ -26,6 +26,8 @@ OpenAI Codex CLI, Claude Code, Claude Desktop и Grok Build. Образ пере
 - 🧰 **Всё внутри**: встроены CLI `codex`, `claude`, `grok` и `omp`
 - 🔌 **[CLI `ocx`](docs/ocx-cli.md)**: одна команда, чтобы подключить к хабу Codex, Claude Code,
   Claude Desktop, Grok Build и Oh My Pi
+- 🧭 **[Combo `jev-auto`](docs/jev-combo.md)**: одна модель для клиентов, а цель и effort для
+  каждого шага выбирает Jev (TypeSafe System One)
 
 **Содержание:** [Быстрый старт](#быстрый-старт) · [Настройка](#настройка) ·
 [Подключение клиентов](#подключение-клиентов) · [CLI ocx](#cli-ocx) · [Обновление](#обновление) ·
@@ -213,6 +215,9 @@ node ocx.mjs restore --client claude             # откатить
 ```
 
 Полное руководство: [docs/ocx-cli.md](docs/ocx-cli.md).
+
+Одна модель `jev-auto`, которая сама выбирает цель и effort для каждого шага через Jev (TypeSafe
+System One): [docs/jev-combo.md](docs/jev-combo.md).
 
 ## Обновление
 
