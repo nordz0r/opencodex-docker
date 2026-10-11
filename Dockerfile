@@ -10,8 +10,9 @@
 #     .
 
 # Both stages must pin the SAME oven/bun tag BY DIGEST; a tag alone is not a production pin.
-# Digest resolved from docker.io for oven/bun:1.4.0 (multi-arch OCI index).
-ARG BUN_IMAGE=oven/bun:1.4.0@sha256:5ff609364c049b54eb0ff560ec96319729a972078ef2c755d758f0c6ef89c2d6
+# Digest resolved from docker.io for oven/bun:1.4.2 (multi-arch OCI index); same pin as
+# upstream lidge-jun/opencodex 8d30945 (#6713, runtime Bun 1.4.2).
+ARG BUN_IMAGE=oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895
 
 FROM ${BUN_IMAGE} AS build
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
