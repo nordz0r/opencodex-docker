@@ -232,7 +232,7 @@ self-hosted service (cold model load).
 | id (key in `combos`) | letters, digits, `.`, `_`, `-`, up to 64 characters | — | Identifier. Without `alias` clients see the model as `combo/<id>` |
 | `alias` | up to 64 characters, at most one `/`, not `combo/…`; bare `gpt-…`, `o3-…` names only with `nativeAlias: true` | none | Public model name: with `alias: "jev-auto"` clients send `model: "jev-auto"` |
 | `strategy` | `failover`, `round-robin`, `random`, `least-used`, `reset-window`, `jev` | `failover` | `jev` for Jev |
-| `decisionTimeoutMs` | integer 1000–120000 | 4000 | Deadline for Jev's answer; fail-open after it. `jev` only |
+| `decisionTimeoutMs` | integer 1000–120000 | 4000 | Deadline for Jev's answer; fail-open after it. `jev` only. Out of range: saving via API/CLI is refused; loading `config.json` drops the combo (see [errors](#common-errors)) |
 | `decisionProvider` | id of a `jev-decision` row, or `jev` | `jev` (TypeSafe) | Your own System One service. Mutually exclusive with `decisionModel` |
 | `decisionModel` | an ordinary OCX route such as `<provider>/<model>` | none | Let an ordinary model decide instead of System One. Mutually exclusive with `decisionProvider` |
 | `reasoningEffortMode` | `strict`, `adaptive` | `strict` | How the combo's effort ladder for clients is derived. `adaptive` keeps targets without effort control from emptying it |
@@ -244,29 +244,18 @@ self-hosted service (cold model load).
 | `targets[].reasoningEfforts` | non-empty array of `low`, `medium`, `high`, `xhigh`, `max`, `ultra`, no duplicates | every effort the model advertises | Efforts Jev may pick. Intersected with the model's ladder; an empty intersection drops the target |
 | `targets[].weight` | integer 1–10000 | 1 | Weight for `round-robin` and `random`; does not affect Jev |
 | `targets[].lastResort` | `true` / `false` | `false` | Reserve target (only together with `cooldownWaitPolicy`) |
-| `targets[].modelProfile` | non-empty string up to 512 characters; tab and newline are the only control characters allowed | none | Your "when to pick this target" note, sent to Jev as `state.operator_notes` |
+| `targets[].modelProfile` | non-empty string up to 512 characters; tab, LF and CR are the only control characters allowed | none | Your "when to pick this target" note, sent to Jev as `state.operator_notes` |
 
 Each target gives Jev one option per allowed effort; the option key is `<provider>/<model>:<effort>`.
 
 ### How to apply
 
-**Management API** (recommended: takes the whole combo, including `cooldownWaitPolicy`). The
-management port `10101` listens only on loopback inside the container, so the call goes through
-`docker compose exec`. The body is `{ "id": …, "combo": { … } }`, where `combo` is the content of
-`combos.jev-auto` from the example above:
+There are two routes: the `ocx combo` CLI (simpler, it supplies the token itself) and the
+management API (the only way to set `cooldownWaitPolicy` without the dashboard). Combining them
+usually works best: build the combo with the CLI and send only `cooldownWaitPolicy` through the API.
 
-```bash
-# jev-auto.put.json: {"id":"jev-auto","combo":{"alias":"jev-auto","strategy":"jev", ...}}
-docker compose exec -T hub sh -c \
-  'curl -fsS -X PUT http://127.0.0.1:10101/api/combos -H "Content-Type: application/json" --data-binary @-' \
-  < jev-auto.put.json
-```
-
-If the hub requires an admin token (`OPENCODEX_ADMIN_AUTH_TOKEN`), add the header
-`X-OpenCodex-API-Key: <admin-token>`. `GET /api/combos` (list) and `DELETE /api/combos?id=jev-auto`
-are available too.
-
-**The `ocx combo` CLI** inside the container:
+**1. The `ocx combo` CLI** inside the container. The CLI finds the running hub and supplies the
+admin token itself:
 
 ```bash
 # jev-auto.targets.json — just the targets array from the example above
@@ -278,9 +267,57 @@ docker compose exec hub bun run src/cli/index.ts combo show jev-auto
 docker compose exec hub bun run src/cli/index.ts combo test --combo jev-auto   # one probe decision
 ```
 
-The CLI has no flag for `cooldownWaitPolicy`: set it through the API or the dashboard
-(**Models → Combos**). In the dashboard, the **TypeSafe JEV** provider has a **Create JEV Auto**
-button that creates the same kind of combo with id and alias `jev-auto`.
+The CLI has no flag for `cooldownWaitPolicy`. In the dashboard, the **TypeSafe JEV** provider has
+a **Create JEV Auto** button that creates the same kind of combo with id and alias `jev-auto`;
+`cooldownWaitPolicy` can be set there as well (**Models → Combos**).
+
+**2. Management API.** In our image `/api/*` is served on the same port **`10100`** as the data
+plane: there is no separate management port (see the footnote below). Every `/api/*` request
+needs the **admin token** in the `X-OpenCodex-API-Key` header (or `Authorization: Bearer`);
+without it the hub answers `401 opencodex admin token required`, or
+`503 management API unavailable` if the token could not be initialised.
+
+> [!IMPORTANT]
+> The admin token is **not** `secrets/ocx_api_token`. `/run/secrets/ocx_api_token`
+> (`OCX_API_TOKEN_FILE`) is the client data-plane key (`/v1/*`), and OpenCodex refuses to use it
+> as the admin token. The admin token comes from `OPENCODEX_ADMIN_AUTH_TOKEN`; when that is unset,
+> the hub creates the file `$OPENCODEX_HOME/admin-api-token` itself
+> (`/home/bun/.opencodex/admin-api-token` in the `ocx-state` volume, format `ocx_admin_…`).
+
+To keep the token out of your shell history and host command lines, read it inside the container
+(the image ships `curl`; the service in `compose.yaml` is called `hub`):
+
+```bash
+# ocx_api <METHOD> <path> [extra curl args]; the token is read inside the container
+ocx_api() {
+  docker compose exec -T hub sh -c '
+    t="${OPENCODEX_ADMIN_AUTH_TOKEN:-$(cat "$OPENCODEX_HOME/admin-api-token")}"
+    m="$1"; p="$2"; shift 2
+    curl -fsS -X "$m" "http://127.0.0.1:10100$p" -H "X-OpenCodex-API-Key: $t" "$@"
+  ' sh "$@"
+}
+```
+
+Add `cooldownWaitPolicy` to a combo created with the CLI. The `PUT /api/combos` body is
+`{ "id": …, "combo": { … } }` and replaces the whole combo, so take the current one and add the
+field:
+
+```bash
+ocx_api GET /api/combos \
+  | jq '{id: "jev-auto",
+         combo: ((.combos[] | select(.id == "jev-auto") | del(.id, .model))
+                 + {cooldownWaitPolicy: "before-last-resort"})}' > jev-auto.put.json
+ocx_api PUT /api/combos -H 'Content-Type: application/json' --data-binary @- < jev-auto.put.json
+```
+
+You can also send the whole combo at once: `jev-auto.put.json` =
+`{"id":"jev-auto","combo":{…the content of combos.jev-auto from the example above…}}`. Delete with
+`ocx_api DELETE '/api/combos?id=jev-auto'`.
+
+> Footnote. A separate management port exists only when `hub.managementIngress` is enabled in the
+> hub's `config.json` (`{"enabled": true, "port": <port>}`): GUI and `/api/*` then additionally
+> listen on `127.0.0.1:<port>`, for a local HTTPS frontend such as Tailscale Serve. The option is
+> off by default and absent from the image's seed `docker/config.json`.
 
 ## Writing modelProfile
 
@@ -308,9 +345,12 @@ Rules:
 Behaviour to keep in mind:
 
 - **Fail-open.** No key, no usable state, timeout, redirect, HTTP error, malformed answer or a
-  choice outside the list — OCX takes the **first available** target with effort `medium` (or the
-  nearest lower one if `medium` is not offered). Put first a target you are happy to get "by
-  default".
+  choice outside the list — OCX takes the **first available** target and picks the effort as
+  `resolveEffortAtOrBelow("medium", <that target's efforts>)`:
+  `medium` if offered; otherwise the highest effort below `medium` (`low`); if nothing is below,
+  the **lowest** available one. For `["high"]` that is `high`, for `["high", "xhigh"]` — `high`,
+  for `["low", "high"]` — `low`. A target without effort control gets no effort. Put first a
+  target you are happy to get "by default", and remember its effort may end up above `medium`.
 - **lastResort.** With `cooldownWaitPolicy: "before-last-resort"`, targets with
   `lastResort: true` are hidden from Jev while any normal target is available, and offered only
   when nothing else remains. Without `cooldownWaitPolicy` the flag does nothing.
@@ -457,7 +497,7 @@ docker compose exec hub tail -n 50 /home/bun/.opencodex/usage.jsonl \
 | `usage` | tokens spent on the decision (when the service returned them) |
 
 Per-combo summary: `docker compose exec hub bun run src/cli/index.ts combo stats jev-auto --range 7d`
-(or `GET /api/usage?jev=1&comboId=jev-auto` on the management port).
+or through the API with [`ocx_api`](#how-to-apply): `ocx_api GET '/api/usage?jev=1&comboId=jev-auto&range=7d' | jq .`.
 
 ## Common errors
 
@@ -465,6 +505,7 @@ Per-combo summary: `docker compose exec hub bun run src/cli/index.ts combo stats
 |---|---|---|
 | `jevDecision` has `gate: "missing_key"`, always the first target | No key: `TYPESAFE_API_KEY`/`JEV_API_KEY` missing from the container environment and no key on the `jev` row; for your own row — it is disabled, has no model, or references the TypeSafe key | Check the `env_file` and recreate the container (`docker compose up -d`); run `combo test` |
 | `gate: "timeout"`, always the first target | Jev misses `decisionTimeoutMs` | Compare `latencyMs` with `decisionTimeoutMs`; raise it to 6000 or more, check the network path to `api.typesafe.ai` |
+| `gate: "network"`, always the first target | Network failure of the decision request (DNS, connection, TLS), not a timeout | Check that the container reaches `api.typesafe.ai:443` (`docker compose exec hub curl -sSI https://api.typesafe.ai`), proxies and `NO_PROXY` |
 | `gate: "no_state"` | The request carries no task text, tool output or image | Normal for housekeeping calls; if every request shows it, the client sends an empty `input` |
 | `gate: "invalid"` | The Jev request exceeds 64 KiB, more than 64 targets, an over-long field, or the hub API key's scope denies the decision destination | Trim `targets` and `modelProfile`, check the key scope |
 | `gate: "http"` / `"redirect"` / `"malformed"` | HTTP error, redirect or unparseable answer from the decision service | Check the key and URL; for your own row — the exact final URL |
@@ -472,8 +513,10 @@ Per-combo summary: `docker compose exec hub bun run src/cli/index.ts combo stats
 | The reserve target is picked while normal ones are up | `cooldownWaitPolicy: "before-last-resort"` is missing | Add it via the API or the dashboard |
 | Your `jev-decision` row is not saved or is ignored | `apiKey` references `$TYPESAFE_API_KEY`/`$JEV_API_KEY`; an HTTP URL not on loopback/LAN or not ending in `/systemone`; no `defaultModel` | Give the row its own key and model, an HTTPS URL or a local `…/systemone` with `allowPrivateNetwork: true` |
 | A manual `curl` to a third-party System One returns `403` / `error code: 1010` | A WAF/CDN rejects requests without `User-Agent` | Add `-A 'opencodex'`; OCX itself sets the header automatically |
-| The combo is rejected: `targets[i].modelProfile must be … at most 512 characters` | Profile longer than 512 characters or containing control characters | Shorten the profile |
-| `decisionTimeoutMs must be an integer from 1000 to 120000` | Value out of range | Use an integer between 1000 and 120000 |
+| The combo is rejected: `targets[i].modelProfile must be … at most 512 characters` | Profile longer than 512 characters or containing control characters other than tab, LF and CR | Shorten the profile |
+| API/CLI answers `decisionTimeoutMs must be an integer from 1000 to 120000` | Out-of-range value on save — the combo is not saved | Use an integer between 1000 and 120000 |
+| The `jev-auto` combo is gone after a manual `config.json` edit; the hub log warns about a dropped `combos` entry | On file load an invalid combo (for example `decisionTimeoutMs` outside 1000–120000) is dropped whole; the rest of the config survives | Fix the value and restart the hub; 4000 is only a runtime fallback for a value that bypassed validation |
+| `401 opencodex admin token required` / `503 management API unavailable` on `/api/*` | Missing or wrong admin token; `ocx_api_token` sent instead of the admin token | Use [`ocx_api`](#how-to-apply) or the `ocx combo` CLI |
 
 ## References
 
