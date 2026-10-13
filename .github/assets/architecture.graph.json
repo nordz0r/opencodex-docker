@@ -1,0 +1,274 @@
+{
+ "schemaVersion": "0.2.0",
+ "kind": "graph",
+ "id": "opencodex-docker-architecture",
+ "generatedAt": "2026-10-13T18:00:00.000Z",
+ "title": "Upstream verification and release chain",
+ "summary": "check-upstream.yml polls npm latest, verifies the signed git tag, triggers build.yml; images go to GHCR and Docker Hub with SBOM and attestation.",
+ "lenses": [
+  "architecture"
+ ],
+ "layout": {
+  "direction": "right",
+  "laneOrder": [
+   "up",
+   "check",
+   "build",
+   "pub"
+  ],
+  "rank": {
+   "npm": 0,
+   "tag": 1,
+   "resolve": 0,
+   "verify": 1,
+   "skip": 2,
+   "docker": 1,
+   "smoke": 2,
+   "ghcr": 1,
+   "hub": 2,
+   "sbom": 3
+  }
+ },
+ "provenance": {
+  "repo": {
+   "owner": "nordz0r",
+   "name": "opencodex-docker",
+   "host": "github.com"
+  },
+  "base": {
+   "sha": "0000000000000000000000000000000000000000",
+   "ref": "main"
+  },
+  "head": {
+   "sha": "0000000000000000000000000000000000000000",
+   "ref": "main"
+  },
+  "generator": {
+   "name": "manual",
+   "version": "1.0.0"
+  }
+ },
+ "lanes": [
+  {
+   "id": "up",
+   "label": "Upstream",
+   "subtitle": "lidge-jun/opencodex",
+   "order": 0
+  },
+  {
+   "id": "check",
+   "label": "check-upstream.yml",
+   "subtitle": "every ~10 min",
+   "order": 1
+  },
+  {
+   "id": "build",
+   "label": "build.yml",
+   "subtitle": "Dockerfile re-verifies",
+   "order": 2
+  },
+  {
+   "id": "pub",
+   "label": "Registries",
+   "subtitle": "multi-arch images",
+   "order": 3
+  }
+ ],
+ "nodes": [
+  {
+   "id": "npm",
+   "label": "npm dist-tag latest",
+   "kind": "external",
+   "delta": "unchanged",
+   "lane": "up",
+   "subtitle": "@bitkyc08/opencodex",
+   "files": [],
+   "badges": []
+  },
+  {
+   "id": "tag",
+   "label": "Signed git tag vX.Y.Z",
+   "kind": "external",
+   "delta": "unchanged",
+   "lane": "up",
+   "subtitle": "package.json version",
+   "files": [],
+   "badges": []
+  },
+  {
+   "id": "resolve",
+   "label": "Resolve version",
+   "kind": "job",
+   "delta": "unchanged",
+   "lane": "check",
+   "subtitle": "npm latest, no previews",
+   "files": [],
+   "badges": []
+  },
+  {
+   "id": "verify",
+   "label": "Verify tag + version",
+   "kind": "job",
+   "delta": "unchanged",
+   "lane": "check",
+   "subtitle": "same version in tag",
+   "files": [],
+   "badges": []
+  },
+  {
+   "id": "skip",
+   "label": "Skip if image exists",
+   "kind": "job",
+   "delta": "unchanged",
+   "lane": "check",
+   "subtitle": "idempotent",
+   "files": [],
+   "badges": []
+  },
+  {
+   "id": "docker",
+   "label": "Docker build",
+   "kind": "job",
+   "delta": "unchanged",
+   "lane": "build",
+   "subtitle": "amd64 + arm64, re-verify",
+   "files": [],
+   "badges": []
+  },
+  {
+   "id": "smoke",
+   "label": "Smoke test",
+   "kind": "test",
+   "delta": "unchanged",
+   "lane": "build",
+   "subtitle": "scripts/smoke-test.sh",
+   "files": [],
+   "badges": []
+  },
+  {
+   "id": "ghcr",
+   "label": "GHCR",
+   "kind": "datastore",
+   "delta": "unchanged",
+   "lane": "pub",
+   "subtitle": "ghcr.io/nordz0r/opencodex",
+   "files": [],
+   "badges": []
+  },
+  {
+   "id": "hub",
+   "label": "Docker Hub",
+   "kind": "datastore",
+   "delta": "unchanged",
+   "lane": "pub",
+   "subtitle": "docker.io/nordz0r/opencodex",
+   "files": [],
+   "badges": []
+  },
+  {
+   "id": "sbom",
+   "label": "SBOM + attestation",
+   "kind": "package",
+   "delta": "unchanged",
+   "lane": "pub",
+   "subtitle": "SPDX, GitHub attestation",
+   "files": [],
+   "badges": []
+  }
+ ],
+ "edges": [
+  {
+   "id": "e0",
+   "from": "npm",
+   "to": "resolve",
+   "kind": "http",
+   "delta": "unchanged",
+   "emphasis": "normal",
+   "animated": true,
+   "files": []
+  },
+  {
+   "id": "e1",
+   "from": "resolve",
+   "to": "verify",
+   "kind": "call",
+   "delta": "unchanged",
+   "emphasis": "normal",
+   "animated": true,
+   "files": []
+  },
+  {
+   "id": "e2",
+   "from": "tag",
+   "to": "verify",
+   "kind": "dependency",
+   "delta": "unchanged",
+   "emphasis": "normal",
+   "animated": true,
+   "files": []
+  },
+  {
+   "id": "e3",
+   "from": "verify",
+   "to": "skip",
+   "kind": "call",
+   "delta": "unchanged",
+   "emphasis": "normal",
+   "animated": true,
+   "files": []
+  },
+  {
+   "id": "e4",
+   "from": "skip",
+   "to": "docker",
+   "kind": "event",
+   "delta": "unchanged",
+   "label": "trigger build",
+   "emphasis": "hero",
+   "animated": true,
+   "files": []
+  },
+  {
+   "id": "e5",
+   "from": "docker",
+   "to": "smoke",
+   "kind": "call",
+   "delta": "unchanged",
+   "emphasis": "normal",
+   "animated": true,
+   "files": []
+  },
+  {
+   "id": "e6",
+   "from": "smoke",
+   "to": "ghcr",
+   "kind": "data",
+   "delta": "unchanged",
+   "label": "push",
+   "emphasis": "hero",
+   "animated": true,
+   "files": []
+  },
+  {
+   "id": "e7",
+   "from": "smoke",
+   "to": "hub",
+   "kind": "data",
+   "delta": "unchanged",
+   "emphasis": "normal",
+   "animated": true,
+   "files": []
+  },
+  {
+   "id": "e8",
+   "from": "docker",
+   "to": "sbom",
+   "kind": "data",
+   "delta": "unchanged",
+   "emphasis": "muted",
+   "animated": false,
+   "files": []
+  }
+ ],
+ "flows": []
+}
