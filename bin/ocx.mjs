@@ -1516,9 +1516,11 @@ async function cmdToggle(opts, enabled) {
     const hub = resolveHub(opts);
     const token = readApiKey();
     if (!token) die('Missing hub admission key: set OCX_API_TOKEN or create a connection key file');
-    const ompJudgeArg = opts.ompJudge ?? process.env.OCX_OMP_JUDGE ?? null;
-    if (ompJudgeArg && !unique.includes('omp')) die('--omp-judge requires --client omp');
+    if (opts.ompJudge != null && !unique.includes('omp')) die('--omp-judge requires --client omp');
+    // OCX_OMP_JUDGE from the environment only applies when omp is selected; ignore it otherwise.
+    const ompJudgeArg = unique.includes('omp') ? (opts.ompJudge ?? process.env.OCX_OMP_JUDGE ?? null) : null;
     const common = unique.some((client) => ['codex', 'grok', 'omp'].includes(client)) ? await readHubCatalog(hub, token) : null;
+    const ompJudge = ompJudgeArg ? resolveOmpJudge(ompJudgeArg, common.models) : null;
     const codexCatalog = unique.includes('codex') ? await writeCodexCatalog(hub, token, opts.clientVersion) : null;
     let desktopSnapshot = null;
     if (unique.includes('claude-desktop')) {
@@ -1553,7 +1555,7 @@ async function cmdToggle(opts, enabled) {
             const before = fs.existsSync(modelFile) ? fs.readFileSync(modelFile, 'utf8') : '';
             stageFile(modelFile, upsertYamlMapChild(before, 'providers', OMP_PROVIDER, buildOmpOcxProviderBlock(hub, token, common.models)));
             const configFile = path.join(dir, 'config.yml');
-            const judge = resolveOmpJudge(ompJudgeArg, common.models);
+            const judge = ompJudge;
             if (fs.existsSync(configFile) || (judge && !judge.reset)) {
               const old = fs.existsSync(configFile) ? fs.readFileSync(configFile, 'utf8') : '';
               let next = yamlSeqRemoveItem(yamlSeqAddItem(old, 'enabledProviders', OMP_PROVIDER), 'disabledProviders', OMP_PROVIDER);
