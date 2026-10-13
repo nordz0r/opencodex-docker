@@ -109,6 +109,12 @@ const grokHomes = () => {
   add(windowsGrokHome());
   return homes;
 };
+const grokHomesForWrite = () => {
+  const homes = grokHomes();
+  if (homes.length) return homes;
+  if (findOnPath('grok')) return [grokHome()];
+  return [];
+};
 const codexHome = () => process.env.CODEX_HOME || homeDir('.codex');
 const opencodexHome = () => process.env.OPENCODEX_HOME || homeDir('.opencodex');
 const claudeHome = () => process.env.CLAUDE_CONFIG_DIR || homeDir('.claude');
