@@ -1,3 +1,11 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/banner-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset=".github/assets/banner-light.svg">
+    <img alt="nordz0r/opencodex-docker — OpenCodex в Docker" src=".github/assets/banner-light.svg" width="100%">
+  </picture>
+</p>
+
 <p align="right"><a href="README.en.md">English</a> · <b>Русский</b></p>
 
 # OpenCodex в Docker — готовый образ LLM-прокси OpenCodex для Codex CLI и Claude Code
