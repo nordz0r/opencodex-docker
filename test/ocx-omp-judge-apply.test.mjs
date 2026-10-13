@@ -106,3 +106,16 @@ test('explicit --omp-judge without --client omp is an error', async () => {
   assert.match(r.stderr, /--omp-judge requires --client omp/);
   assert.equal(fs.existsSync(path.join(root, '.codex', 'config.toml')), false);
 });
+
+test('config.yml created from scratch enables ocx alongside the judge', async () => {
+  const { config, run } = sandbox();
+  assert.equal(fs.existsSync(config), false);
+  const r = await run(['apply', '--client', 'omp', '--omp-judge', 'gpt-6-luna:low']);
+  assert.equal(r.status, 0, r.stderr);
+  const text = fs.readFileSync(config, 'utf8');
+  assert.match(text, /^enabledProviders: \[ocx\]$/m);
+  assert.equal(judgeOf(config), '"ocx/gpt-6-luna:low"');
+  const back = await run(['restore', '--client', 'omp']);
+  assert.equal(back.status, 0, back.stderr);
+  assert.equal(fs.existsSync(config), false);
+});

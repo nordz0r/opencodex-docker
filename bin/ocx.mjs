@@ -1557,8 +1557,10 @@ async function cmdToggle(opts, enabled) {
             const configFile = path.join(dir, 'config.yml');
             const judge = ompJudge;
             if (fs.existsSync(configFile) || (judge && !judge.reset)) {
-              const old = fs.existsSync(configFile) ? fs.readFileSync(configFile, 'utf8') : '';
-              let next = yamlSeqRemoveItem(yamlSeqAddItem(old, 'enabledProviders', OMP_PROVIDER), 'disabledProviders', OMP_PROVIDER);
+              const exists = fs.existsSync(configFile);
+              const old = exists ? fs.readFileSync(configFile, 'utf8') : '';
+              // A config.yml created from scratch must still enable the ocx provider.
+              let next = yamlSeqRemoveItem(yamlSeqAddItem(exists ? old : `enabledProviders: [${OMP_PROVIDER}]\n`, 'enabledProviders', OMP_PROVIDER), 'disabledProviders', OMP_PROVIDER);
               next = applyOmpJudge(next, judge);
               if (next !== old) stageFile(configFile, next);
               if (judge) logOk(`omp: judge ${judge.reset ? 'reset to OMP defaults' : `= ${judge.selector}`} (${configFile})`);
