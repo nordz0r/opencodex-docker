@@ -57,7 +57,7 @@ export OCX_HUB=http://127.0.0.1:10100
 | `node ocx.mjs help` / `--help` / `-h` | Справка. |
 
 ID клиентов: `codex`, `claude` (синоним `claude-code`), `claude-desktop`, `grok`, `omp`.
-Общая опция: `--hub <url>`.
+Общая опция: `--hub <url>`. Для `omp`: `--omp-judge <модель>` (см. ниже).
 
 ## Что меняет `apply`
 
@@ -67,7 +67,7 @@ ID клиентов: `codex`, `claude` (синоним `claude-code`), `claude-d
 | `claude` | `~/.claude/settings.json`, `~/.claude/cache/gateway-models.json` | `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_AUTH_TOKEN`, обнаружение моделей через шлюз, слоты opus/sonnet/fable/haiku и список `/model` по назначениям хаба; включает `disableClaudeAiConnectors`. Убирает старый хук `claude-env.sh` из `~/.bashrc`. |
 | `claude-desktop` | `Claude-3p/configLibrary/<id>.json` и `_meta.json` (`%LOCALAPPDATA%` в Windows, `~/.config` в остальных) | Создаёт или обновляет профиль шлюза `opencodex` и выбирает его. Не переключает, если сейчас выбран чужой профиль. |
 | `grok` | `~/.grok/config.toml` | Заменяет блок между метками `# >>> opencodex managed block` на провайдера хаба и по записи `ocx-<модель>` на каждую модель каталога (модели Claude исключаются). |
-| `omp` | `~/.omp/agent/models.yml`, `~/.omp/agent/config.yml` | Добавляет провайдера `ocx` (`openai-responses`) с моделями каталога и включает его. |
+| `omp` | `~/.omp/agent/models.yml`, `~/.omp/agent/config.yml` | Добавляет провайдера `ocx` (`openai-responses`) с моделями каталога и включает его. С `--omp-judge` ещё пишет `modelRoles.judge` в `config.yml`. |
 
 Правила безопасности:
 
@@ -80,6 +80,27 @@ ID клиентов: `codex`, `claude` (синоним `claude-code`), `claude-d
 - Пустой или некорректный каталог хаба прерывает запуск до любых записей.
 - В логе `~/.ocx-export/ocx-export.log` токены и ключи маскируются.
 
+## Модель-судья omp (judge)
+
+В omp роль `judge` (`modelRoles.judge` в `~/.omp/agent/config.yml`) — модель, которая отвечает на
+короткие вопросы «да/нет / выбор / оценка»: автовыбор effort, ранжирование в `find`, `judge()` и
+`judge_batch()` в eval, детектор преждевременной остановки, страница Frustration в `/stats`. Если
+роль не задана, omp берёт `typesafe/jev-latest`, затем `@tiny`, `@smol`, `@default`.
+
+```bash
+node ocx.mjs apply --client omp --omp-judge gpt-6-luna:low        # → ocx/gpt-6-luna:low (модель хаба)
+node ocx.mjs apply --client omp --omp-judge codiv/openjev-latest  # нативный судья своего провайдера
+node ocx.mjs apply --client omp --omp-judge auto                  # убрать, цепочка omp по умолчанию
+node ocx.mjs status --client omp                                  # показывает текущий judge
+```
+
+- Id из каталога хаба (можно с `:low` и т.п.) получает префикс `ocx/` и проверяется по каталогу.
+- `провайдер/модель` чужого провайдера (например, `codiv/openjev-latest` с `api: typesafe`)
+  записывается как есть; сам провайдер настраивается в `models.yml` отдельно.
+- Без `--omp-judge` / `OCX_OMP_JUDGE` уже заданный judge не трогается. Файл попадает в журнал,
+  `restore --client omp` возвращает его.
+- Для судьи через хаб берите быструю дешёвую модель с низким effort: вопросов много и они короткие.
+
 ## Переменные окружения
 
 | Переменная | По умолчанию | Назначение |
@@ -91,6 +112,7 @@ ID клиентов: `codex`, `claude` (синоним `claude-code`), `claude-d
 | `OCX_LOG_FILE` | `~/.ocx-export/ocx-export.log` | файл лога |
 | `OCX_NONINTERACTIVE=1` | — | никогда не открывать интерактивный выбор (CI, скрипты) |
 | `OCX_ASSUME_TTY=1` | — | всегда открывать интерактивный выбор |
+| `OCX_OMP_JUDGE` | — | то же, что `--omp-judge` |
 | `OCX_COMBO_PREFIXES` | `combo/` | префиксы id через запятую, которые `models` показывает как `combo` |
 | `NO_COLOR` | — | отключить цвета |
 | `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME`, `OMP_HOME`, `OPENCODEX_HOME` | `~/.codex`, `~/.claude`, `~/.grok`, `~/.omp`, `~/.opencodex` | каталоги клиентов |

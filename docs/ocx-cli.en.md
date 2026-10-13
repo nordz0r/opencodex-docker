@@ -57,7 +57,7 @@ The key is taken from, in order: `OCX_API_TOKEN`, the file `OCX_API_TOKEN_FILE`
 | `node ocx.mjs help` / `--help` / `-h` | Usage. |
 
 Client ids: `codex`, `claude` (alias `claude-code`), `claude-desktop`, `grok`, `omp`.
-Global option: `--hub <url>`.
+Global option: `--hub <url>`. For `omp`: `--omp-judge <model>` (see below).
 
 ## What `apply` changes
 
@@ -67,7 +67,7 @@ Global option: `--hub <url>`.
 | `claude` | `~/.claude/settings.json`, `~/.claude/cache/gateway-models.json` | `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_AUTH_TOKEN`, gateway model discovery, opus/sonnet/fable/haiku slots and the `/model` picker from the hub assignments; sets `disableClaudeAiConnectors`. Removes the legacy `claude-env.sh` hook from `~/.bashrc`. |
 | `claude-desktop` | `Claude-3p/configLibrary/<id>.json` and `_meta.json` (`%LOCALAPPDATA%` on Windows, `~/.config` elsewhere) | Creates/updates and selects a gateway profile named `opencodex`. Refuses to switch away from a foreign profile that is currently selected. |
 | `grok` | `~/.grok/config.toml` | Replaces a fenced `# >>> opencodex managed block` with the hub provider and one `ocx-<model>` entry per catalog model (Claude models excluded). |
-| `omp` | `~/.omp/agent/models.yml`, `~/.omp/agent/config.yml` | Adds provider `ocx` (`openai-responses`) with the catalog models and enables it. |
+| `omp` | `~/.omp/agent/models.yml`, `~/.omp/agent/config.yml` | Adds provider `ocx` (`openai-responses`) with the catalog models and enables it. With `--omp-judge` also writes `modelRoles.judge` to `config.yml`. |
 
 Safety rules:
 
@@ -78,6 +78,27 @@ Safety rules:
 - A run holds the lock directory `~/.ocx-export/mutation.lock`; a second run fails instead of racing.
 - An empty or invalid hub catalog aborts the run before anything is written.
 - The log `~/.ocx-export/ocx-export.log` redacts tokens and keys.
+
+## omp judge model
+
+In omp the `judge` role (`modelRoles.judge` in `~/.omp/agent/config.yml`) is the model that answers
+short yes/no, choice and score questions: auto effort selection, `find` ranking, eval `judge()` /
+`judge_batch()`, premature-stop detection, the `/stats` Frustration page. When unset, omp uses
+`typesafe/jev-latest`, then `@tiny`, `@smol`, `@default`.
+
+```bash
+node ocx.mjs apply --client omp --omp-judge gpt-6-luna:low        # → ocx/gpt-6-luna:low (hub model)
+node ocx.mjs apply --client omp --omp-judge codiv/openjev-latest  # native judge from your own provider
+node ocx.mjs apply --client omp --omp-judge auto                  # unset, omp default chain
+node ocx.mjs status --client omp                                  # shows the current judge
+```
+
+- A hub catalog id (optionally with `:low` etc.) gets the `ocx/` prefix and is checked against the catalog.
+- A foreign `provider/model` (e.g. `codiv/openjev-latest` with `api: typesafe`) is written as is;
+  configure that provider in `models.yml` yourself.
+- Without `--omp-judge` / `OCX_OMP_JUDGE` an existing judge is never touched. The file is journaled,
+  so `restore --client omp` puts it back.
+- For a hub judge pick a fast, cheap model at low effort: calls are many and short.
 
 ## Environment variables
 
@@ -90,6 +111,7 @@ Safety rules:
 | `OCX_LOG_FILE` | `~/.ocx-export/ocx-export.log` | log file |
 | `OCX_NONINTERACTIVE=1` | — | never open the picker (CI, scripts) |
 | `OCX_ASSUME_TTY=1` | — | force the picker |
+| `OCX_OMP_JUDGE` | — | same as `--omp-judge` |
 | `OCX_COMBO_PREFIXES` | `combo/` | comma-separated id prefixes shown as `combo` by `models` |
 | `NO_COLOR` | — | disable colors |
 | `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME`, `OMP_HOME`, `OPENCODEX_HOME` | `~/.codex`, `~/.claude`, `~/.grok`, `~/.omp`, `~/.opencodex` | client homes |

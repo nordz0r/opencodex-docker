@@ -212,7 +212,13 @@ export OCX_API_TOKEN_FILE=~/secrets/ocx_api_token
 node ocx.mjs models                              # каталог моделей хаба
 node ocx.mjs apply --client codex --client claude
 node ocx.mjs restore --client claude             # откатить
+node ocx.mjs apply --client omp --omp-judge gpt-6-luna:low   # omp + модель-судья (modelRoles.judge)
 ```
+
+Для `omp` можно задать роль `judge` — модель, которая отвечает на короткие вопросы-оценки
+(автовыбор effort, ранжирование в `find`, `judge()` в eval). Без `--omp-judge` существующая
+настройка не меняется; `--omp-judge auto` возвращает цепочку omp по умолчанию. Подробнее:
+[docs/ocx-cli.md](docs/ocx-cli.md#модель-судья-omp-judge).
 
 Полное руководство: [docs/ocx-cli.md](docs/ocx-cli.md).
 

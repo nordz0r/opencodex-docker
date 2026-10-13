@@ -1276,6 +1276,50 @@ function buildOmpOcxProviderBlock(hub, token, models) {
   return `${lines.join('\n')}\n`;
 }
 
+// OMP `judge` model role (modelRoles.judge in agent/config.yml): the model that
+// answers yes/no/choice/score questions for auto-thinking effort, `find` ranking,
+// eval judge()/judge_batch(), /stats frustration etc. Unset → OMP falls back to
+// typesafe/jev-latest → @tiny → @smol → @default. Apply never touches an
+// existing judge unless --omp-judge / OCX_OMP_JUDGE is given.
+const OMP_JUDGE_RESET = new Set(['auto', 'default', 'none', 'off']);
+
+function resolveOmpJudge(value, models) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  if (OMP_JUDGE_RESET.has(raw.toLowerCase())) return { reset: true, selector: null };
+  if (/[\s"'#]/.test(raw)) die(`omp judge: invalid model selector: ${raw}`);
+  const ids = new Set((models || []).map((m) => m.id));
+  const split = (sel) => {
+    const m = sel.match(/^(.*?)(:(?:minimal|low|medium|high|xhigh|max|off))?$/);
+    return { id: m[1], effort: m[2] || '' };
+  };
+  if (raw.startsWith(`${OMP_PROVIDER}/`)) {
+    const { id } = split(raw.slice(OMP_PROVIDER.length + 1));
+    if (!ids.has(id)) die(`omp judge: ${id} is not in the hub catalog (node ocx.mjs models)`);
+    return { reset: false, selector: raw, viaHub: true };
+  }
+  const { id, effort } = split(raw);
+  if (ids.has(id)) return { reset: false, selector: `${OMP_PROVIDER}/${id}${effort}`, viaHub: true };
+  // Foreign provider selector (e.g. codiv/openjev-latest, typesafe/jev-latest): pass through.
+  if (!raw.includes('/')) die(`omp judge: ${raw} is neither a hub catalog id nor a provider/model selector`);
+  return { reset: false, selector: raw, viaHub: false };
+}
+
+function applyOmpJudge(configText, judge) {
+  if (!judge) return configText;
+  if (judge.reset) return removeYamlMapChild(configText, 'modelRoles', 'judge');
+  return upsertYamlMapChild(configText, 'modelRoles', 'judge', `  judge: ${yamlQuote(judge.selector)}`);
+}
+
+function ompJudgeFromConfig(configText) {
+  const lines = splitYamlLines(configText);
+  const range = findYamlChildRange(lines, 'modelRoles', 'judge', 0);
+  if (range.childStart < 0) return null;
+  const m = lines[range.childStart].match(/^\s*judge\s*:\s*(.*)$/);
+  const v = m ? yamlUnquote(m[1].replace(/\s+#.*$/, '').trim()) : '';
+  return v || null;
+}
+
 function ompHubPresent(modelsPath, hub) {
   if (!fs.existsSync(modelsPath)) return false;
   let text = '';
@@ -1449,6 +1493,11 @@ function cmdStatus(opts) {
           : client === 'grok' ? grokHomes().map((home) => path.join(home, 'config.toml'))
             : ompHomes().map((home) => path.join(ompAgentDir(home), 'models.yml'));
     write(`client=${client} installed=${clientInstalled(client)} state=${managedClientActive(client) ? 'current' : 'absent'} files=${files.filter((file) => fs.existsSync(file)).join(',') || 'none'}`);
+    if (client === 'omp') {
+      const cfg = ompHomes().map((home) => path.join(ompAgentDir(home), 'config.yml')).find((file) => fs.existsSync(file));
+      const judge = cfg ? ompJudgeFromConfig(fs.readFileSync(cfg, 'utf8')) : null;
+      write(`client=omp judge=${judge || 'unset (OMP default chain)'}`);
+    }
   }
   write('catalog: fetched from the hub on demand (node ocx.mjs models)');
 }
@@ -1467,6 +1516,8 @@ async function cmdToggle(opts, enabled) {
     const hub = resolveHub(opts);
     const token = readApiKey();
     if (!token) die('Missing hub admission key: set OCX_API_TOKEN or create a connection key file');
+    const ompJudgeArg = opts.ompJudge ?? process.env.OCX_OMP_JUDGE ?? null;
+    if (ompJudgeArg && !unique.includes('omp')) die('--omp-judge requires --client omp');
     const common = unique.some((client) => ['codex', 'grok', 'omp'].includes(client)) ? await readHubCatalog(hub, token) : null;
     const codexCatalog = unique.includes('codex') ? await writeCodexCatalog(hub, token, opts.clientVersion) : null;
     let desktopSnapshot = null;
@@ -1502,10 +1553,13 @@ async function cmdToggle(opts, enabled) {
             const before = fs.existsSync(modelFile) ? fs.readFileSync(modelFile, 'utf8') : '';
             stageFile(modelFile, upsertYamlMapChild(before, 'providers', OMP_PROVIDER, buildOmpOcxProviderBlock(hub, token, common.models)));
             const configFile = path.join(dir, 'config.yml');
-            if (fs.existsSync(configFile)) {
-              const old = fs.readFileSync(configFile, 'utf8');
-              const next = yamlSeqRemoveItem(yamlSeqAddItem(old, 'enabledProviders', OMP_PROVIDER), 'disabledProviders', OMP_PROVIDER);
+            const judge = resolveOmpJudge(ompJudgeArg, common.models);
+            if (fs.existsSync(configFile) || (judge && !judge.reset)) {
+              const old = fs.existsSync(configFile) ? fs.readFileSync(configFile, 'utf8') : '';
+              let next = yamlSeqRemoveItem(yamlSeqAddItem(old, 'enabledProviders', OMP_PROVIDER), 'disabledProviders', OMP_PROVIDER);
+              next = applyOmpJudge(next, judge);
               if (next !== old) stageFile(configFile, next);
+              if (judge) logOk(`omp: judge ${judge.reset ? 'reset to OMP defaults' : `= ${judge.selector}`} (${configFile})`);
             }
           }
         }
@@ -1973,6 +2027,7 @@ function parseArgs(argv) {
       case '--help': case '-h': opts.command = 'help'; break;
       case '--hub': opts.hub = value(); break;
       case '--client': opts.client.push(mapClient(value())); break;
+      case '--omp-judge': opts.ompJudge = value(); break;
       default:
         if (arg.startsWith('-')) die(`unknown option: ${arg}`);
         else die(`unexpected argument: ${arg}`);
@@ -1996,6 +2051,9 @@ Usage:
 Options:
   --hub <url>       hub origin, e.g. https://ocx.example.com (HTTP only on loopback)
   --client <id>     codex | claude (alias claude-code) | claude-desktop | grok | omp
+  --omp-judge <m>   apply --client omp: set OMP modelRoles.judge. Hub id (gpt-6-luna:low → ocx/gpt-6-luna:low),
+                    ocx/<id>, a foreign provider/model (codiv/openjev-latest), or auto to unset.
+                    Without it an existing judge is left untouched.
 
 Hub URL resolution: --hub, then OCX_HUB, then <state>/connection.json {"hub": "..."},
 then ${DEFAULT_HUB}.
@@ -2012,6 +2070,7 @@ Environment:
   OCX_LOG_FILE            log file (default ~/.ocx-export/ocx-export.log; secrets redacted)
   OCX_NONINTERACTIVE=1    never open the interactive picker (CI)
   OCX_ASSUME_TTY=1        force the interactive picker
+  OCX_OMP_JUDGE           same as --omp-judge
   OCX_COMBO_PREFIXES      comma-separated id prefixes shown as "combo" (default combo/)
   NO_COLOR                disable colors
   Client homes: CODEX_HOME, CLAUDE_CONFIG_DIR, GROK_HOME, OMP_HOME, OPENCODEX_HOME,
@@ -2081,6 +2140,9 @@ export {
   yamlSeqRemoveItem,
   buildOmpOcxProviderBlock,
   ompHubPresent,
+  resolveOmpJudge,
+  applyOmpJudge,
+  ompJudgeFromConfig,
   catalogModelsFromData,
   loadOmpCatalog,
 };

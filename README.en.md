@@ -213,7 +213,13 @@ export OCX_API_TOKEN_FILE=~/secrets/ocx_api_token
 node ocx.mjs models                              # list the hub catalog
 node ocx.mjs apply --client codex --client claude
 node ocx.mjs restore --client claude             # undo
+node ocx.mjs apply --client omp --omp-judge gpt-6-luna:low   # omp + judge model (modelRoles.judge)
 ```
+
+For `omp` you can set the `judge` role — the model that answers short evaluation questions
+(auto effort selection, `find` ranking, eval `judge()`). Without `--omp-judge` an existing
+setting is left alone; `--omp-judge auto` restores omp's default chain. Details:
+[docs/ocx-cli.en.md](docs/ocx-cli.en.md#omp-judge-model).
 
 Full guide: [docs/ocx-cli.en.md](docs/ocx-cli.en.md).
 
