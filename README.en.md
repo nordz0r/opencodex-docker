@@ -307,6 +307,14 @@ gh attestation verify oci://ghcr.io/nordz0r/opencodex:2.83.0 -R nordz0r/opencode
 
 ## Upstream verification chain
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/architecture-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset=".github/assets/architecture-light.svg">
+    <img alt="Upstream verification chain: npm latest → signed tag check → build.yml → smoke test → GHCR / Docker Hub with SBOM" src=".github/assets/architecture-light.svg" width="100%">
+  </picture>
+</p>
+
 `check-upstream.yml` runs about every 10 minutes (`3,13,23,33,43,53 * * * *`; GitHub may delay):
 
 1. Resolves the stable version from the npm dist-tag `latest` of

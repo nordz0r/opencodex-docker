@@ -303,6 +303,14 @@ gh attestation verify oci://ghcr.io/nordz0r/opencodex:2.83.0 -R nordz0r/opencode
 
 ## Цепочка проверки upstream
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/architecture-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset=".github/assets/architecture-light.svg">
+    <img alt="Цепочка проверки upstream: npm latest → проверка подписанного тега → build.yml → smoke-тест → GHCR / Docker Hub с SBOM" src=".github/assets/architecture-light.svg" width="100%">
+  </picture>
+</p>
+
 `check-upstream.yml` запускается примерно каждые 10 минут (`3,13,23,33,43,53 * * * *`; GitHub может
 задерживать):
 
