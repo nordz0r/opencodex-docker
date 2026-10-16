@@ -394,14 +394,13 @@ catalog already contains `jev-auto`:
 
 ```bash
 OCX_HUB=<hub-url> node ocx.mjs apply --client codex
-export OPENCODEX_API_AUTH_TOKEN='<api-key>'
+export OCX_API_TOKEN='<api-key>'
 codex -m jev-auto
 ```
 
 or permanently via `model = "jev-auto"` in `~/.codex/config.toml`.
 
-`node ocx.mjs models` shows `jev-auto` as `routed`, because the `combo` type is detected by the
-`combo/` prefix. To see it as a combo: `OCX_COMBO_PREFIXES=combo/,jev- node ocx.mjs models`.
+`node ocx.mjs models` lists the models and routes published by the hub catalog.
 
 **OpenAI-compatible client:**
 

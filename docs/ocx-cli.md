@@ -26,14 +26,13 @@ node ocx.mjs --help
 **не** ключ провайдера).
 
 ```bash
-export OCX_HUB=https://ocx.example.com                 # origin хаба, без пути
-mkdir -p ~/.ocx-export && chmod 700 ~/.ocx-export
-printf '%s' '<ключ>' > ~/.ocx-export/api-key && chmod 600 ~/.ocx-export/api-key
+node ocx.mjs configure --hub https://ocx.example.com  # ввод ключа скрыт в терминале
+# Без TTY: node ocx.mjs configure --hub https://ocx.example.com --token-stdin < /path/to/key
 ```
 
 Адрес хаба берётся по порядку: `--hub <url>`, `OCX_HUB`, поле `"hub"` в
-`$OCX_STATE_HOME/connection.json`, иначе `http://127.0.0.1:10100` (локальная публикация контейнера
-по умолчанию). Удалённый хаб — только по **HTTPS**; обычный HTTP разрешён лишь для `localhost`,
+`$OCX_STATE_HOME/connection.json`, иначе `https://ocx.goldfinches.ru`.
+Удалённый хаб — только по **HTTPS**; обычный HTTP разрешён лишь для `localhost`,
 `127.0.0.1` и `[::1]`. Если HTTPS пока нет, поднимите SSH-туннель и используйте loopback-адрес:
 
 ```bash
@@ -41,9 +40,10 @@ ssh -N -L 10100:127.0.0.1:10100 user@hub-host &
 export OCX_HUB=http://127.0.0.1:10100
 ```
 
-Ключ берётся по порядку: `OCX_API_TOKEN`, файл `OCX_API_TOKEN_FILE` (по умолчанию
-`~/.ocx-export/api-key`), затем `$OPENCODEX_HOME/service-api-token` (по умолчанию
-`~/.opencodex/service-api-token`). Файл надёжнее переменной окружения.
+Ключ берётся по порядку: `OCX_API_TOKEN`, явно заданный файл `OCX_API_TOKEN_FILE`,
+`$OCX_STATE_HOME/api-key`, затем `~/.opencodex/service-api-token` (в WSL также Windows-профиль).
+Если явно заданный файл отсутствует, недоступен или пуст, запуск прекращается без подстановки другого ключа.
+`configure` сохраняет ключ только в собственный `api-key` с правами `0600`; конфиги клиентов не меняет.
 
 ## Команды
 
@@ -51,23 +51,24 @@ export OCX_HUB=http://127.0.0.1:10100
 |---|---|
 | `node ocx.mjs` | В терминале — интерактивный выбор (пробел отмечает, `a` — все, стрелки/мышь, enter). Без TTY — то же, что `status`. |
 | `node ocx.mjs status [--client <id> ...]` | Только чтение: адрес хаба, какие клиенты установлены, какими управляет ocx, какие файлы есть. |
+| `node ocx.mjs configure [--hub <url>] [--omp-api <api>] [--token-stdin]` | Сохраняет подключение и API OMP; вводит ключ скрыто в TTY либо читает stdin с явным флагом. |
 | `node ocx.mjs models` | Каталог хаба (`GET /v1/catalog`): id, контекстное окно, тип (native / routed / combo), название. |
 | `node ocx.mjs apply --client <id> [...]` | Скачивает каталог и прописывает настройки хаба в выбранные клиенты. |
 | `node ocx.mjs restore --client <id> [...]` | Возвращает файлы, сохранённые перед первым `apply` для этих клиентов. |
 | `node ocx.mjs help` / `--help` / `-h` | Справка. |
 
 ID клиентов: `codex`, `claude` (синоним `claude-code`), `claude-desktop`, `grok`, `omp`.
-Общая опция: `--hub <url>`. Для `omp`: `--omp-judge <модель>` (см. ниже).
+Общая опция: `--hub <url>`. `--omp-api` и `--token-stdin` доступны только для `configure`.
 
 ## Что меняет `apply`
 
 | Клиент | Файлы (по умолчанию) | Примечания |
 |---|---|---|
-| `codex` | `~/.codex/config.toml`, `~/.codex/opencodex-catalog.json` | Ставит `model_provider = "opencodex"`, секцию `[model_providers.opencodex]` с `base_url = <хаб>/v1`, `wire_api = "responses"`, `env_key = "OPENCODEX_API_AUTH_TOKEN"` и скачанный каталог моделей. Ключ **не** записывается: перед запуском `codex` экспортируйте `OPENCODEX_API_AUTH_TOKEN`. |
+| `codex` | `~/.codex/config.toml`, `~/.codex/opencodex-catalog.json` | Ставит `model_provider = "opencodex"`, `[model_providers.opencodex]` с `base_url = <хаб>/v1`, `wire_api = "responses"`, `requires_openai_auth = false`, `env_key = "OCX_API_TOKEN"` и каталог моделей. Сам ключ не записывается: экспортируйте `OCX_API_TOKEN` в окружении запуска Codex. |
 | `claude` | `~/.claude/settings.json`, `~/.claude/cache/gateway-models.json` | `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_AUTH_TOKEN`, обнаружение моделей через шлюз, слоты opus/sonnet/fable/haiku и список `/model` по назначениям хаба; включает `disableClaudeAiConnectors`. Убирает старый хук `claude-env.sh` из `~/.bashrc`. |
 | `claude-desktop` | `Claude-3p/configLibrary/<id>.json` и `_meta.json` (`%LOCALAPPDATA%` в Windows, `~/.config` в остальных) | Создаёт или обновляет профиль шлюза `opencodex` и выбирает его. Не переключает, если сейчас выбран чужой профиль. |
 | `grok` | `~/.grok/config.toml` | Заменяет блок между метками `# >>> opencodex managed block` на провайдера хаба и по записи `ocx-<модель>` на каждую модель каталога (модели Claude исключаются). |
-| `omp` | `~/.omp/agent/models.yml`, `~/.omp/agent/config.yml` | Добавляет провайдера `ocx` (`openai-responses`) с моделями каталога и включает его. С `--omp-judge` ещё пишет `modelRoles.judge` в `config.yml`. |
+| `omp` | `~/.omp/agent/models.yml`, существующий `~/.omp/agent/config.yml` | Добавляет провайдера `ocx` с базовыми моделями из `/v1/models`, обогащёнными `/v1/catalog`. API по умолчанию `openai-responses`, опционально `anthropic-messages`. Существующий список `enabledProviders` дополняется; роли моделей, включая judge, сохраняются. |
 
 Правила безопасности:
 
@@ -75,47 +76,41 @@ ID клиентов: `codex`, `claude` (синоним `claude-code`), `claude-d
   пишутся атомарно с правами `0600`.
 - Перед записью оригинал каждого файла сохраняется в журнал `~/.ocx-export/integrations.json`.
 - `restore` не перезапишет файл, который вы правили после `apply` («File changed since apply»).
+- `apply` показывает ручные изменения относительно журнала и запрашивает подтверждение в TTY;
+  без интерактивного терминала отказывается перезаписывать их.
 - На время работы занимается каталог-блокировка `~/.ocx-export/mutation.lock`; второй запуск
   завершится ошибкой, а не будет мешать первому.
 - Пустой или некорректный каталог хаба прерывает запуск до любых записей.
 - В логе `~/.ocx-export/ocx-export.log` токены и ключи маскируются.
 
-## Модель-судья omp (judge)
-
-В omp роль `judge` (`modelRoles.judge` в `~/.omp/agent/config.yml`) — модель, которая отвечает на
-короткие вопросы «да/нет / выбор / оценка»: автовыбор effort, ранжирование в `find`, `judge()` и
-`judge_batch()` в eval, детектор преждевременной остановки, страница Frustration в `/stats`. Если
-роль не задана, omp берёт `typesafe/jev-latest`, затем `@tiny`, `@smol`, `@default`.
+## API и роли моделей omp
 
 ```bash
-node ocx.mjs apply --client omp --omp-judge gpt-6-luna:low        # → ocx/gpt-6-luna:low (модель хаба)
-node ocx.mjs apply --client omp --omp-judge codiv/openjev-latest  # нативный судья своего провайдера
-node ocx.mjs apply --client omp --omp-judge auto                  # убрать, цепочка omp по умолчанию
-node ocx.mjs status --client omp                                  # показывает текущий judge
+node ocx.mjs configure --omp-api anthropic-messages
+node ocx.mjs apply --client omp
+node ocx.mjs configure --omp-api openai-responses
 ```
 
-- Id из каталога хаба (можно с `:low` и т.п.) получает префикс `ocx/` и проверяется по каталогу.
-- `провайдер/модель` чужого провайдера (например, `codiv/openjev-latest` с `api: typesafe`)
-  записывается как есть; сам провайдер настраивается в `models.yml` отдельно.
-- Без `--omp-judge` / `OCX_OMP_JUDGE` уже заданный judge не трогается. Файл попадает в журнал,
-  `restore --client omp` возвращает его.
-- Для судьи через хаб берите быструю дешёвую модель с низким effort: вопросов много и они короткие.
+`configure` без `--omp-api` сохраняет предыдущий выбор. Псевдонимы Claude и варианты с
+закреплёнными effort/fast в OMP не импортируются; reasoning-возможности берутся из данных хаба.
+
+В этой версии удалены `--omp-judge` и `OCX_OMP_JUDGE`: роль `modelRoles.judge` настраивается
+средствами самого omp. `apply` сохраняет её, как и остальные роли моделей.
+
 
 ## Переменные окружения
 
 | Переменная | По умолчанию | Назначение |
 |---|---|---|
-| `OCX_HUB` | — | origin хаба |
+| `OCX_HUB` | `https://ocx.goldfinches.ru` без сохранённого подключения | origin хаба |
 | `OCX_API_TOKEN` | — | ключ доступа (лучше файл) |
-| `OCX_API_TOKEN_FILE` | `~/.ocx-export/api-key` | файл с ключом |
+| `OCX_API_TOKEN_FILE` | — | явный файл ключа; ошибка чтения запрещает fallback |
 | `OCX_STATE_HOME` | `~/.ocx-export` | журнал, блокировка, необязательный `connection.json` |
-| `OCX_LOG_FILE` | `~/.ocx-export/ocx-export.log` | файл лога |
+| `OCX_LOG_FILE` | `$OCX_STATE_HOME/ocx-export.log` | файл лога |
 | `OCX_NONINTERACTIVE=1` | — | никогда не открывать интерактивный выбор (CI, скрипты) |
 | `OCX_ASSUME_TTY=1` | — | всегда открывать интерактивный выбор |
-| `OCX_OMP_JUDGE` | — | то же, что `--omp-judge` |
-| `OCX_COMBO_PREFIXES` | `combo/` | префиксы id через запятую, которые `models` показывает как `combo` |
 | `NO_COLOR` | — | отключить цвета |
-| `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME`, `OMP_HOME`, `OPENCODEX_HOME` | `~/.codex`, `~/.claude`, `~/.grok`, `~/.omp`, `~/.opencodex` | каталоги клиентов |
+| `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME`, `OMP_HOME` | `~/.codex`, `~/.claude`, `~/.grok`, `~/.omp` | каталоги клиентов |
 | `OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR`, `CLAUDE_USER_DATA_DIR` | см. таблицу выше | где лежат профили Claude Desktop |
 
 ## Примеры
@@ -126,7 +121,7 @@ node ocx.mjs status
 
 # Codex и Claude Code на удалённый хаб
 OCX_HUB=https://ocx.example.com node ocx.mjs apply --client codex --client claude
-export OPENCODEX_API_AUTH_TOKEN="$(cat ~/.ocx-export/api-key)"   # для Codex
+export OCX_API_TOKEN="$(cat ~/.ocx-export/api-key)"   # для Codex
 codex
 
 # Модели на хабе поменялись — просто выполните apply ещё раз
@@ -136,19 +131,19 @@ node ocx.mjs apply --client claude
 node ocx.mjs restore --client codex --client claude
 
 # На самом хосте хаба (контейнер опубликован на 127.0.0.1:10100)
-OCX_API_TOKEN_FILE=./secrets/ocx_api_token node bin/ocx.mjs models
+OCX_HUB=http://127.0.0.1:10100 OCX_API_TOKEN_FILE=./secrets/ocx_api_token node bin/ocx.mjs models
 ```
 
 ## Решение проблем
 
 | Сообщение | Что значит и что делать |
 |---|---|
-| `Missing hub admission key` | Ключ не найден: задайте `OCX_API_TOKEN_FILE` или создайте `~/.ocx-export/api-key`. |
+| `No hub API key found` | Выполните `configure` со скрытым вводом ключа или задайте `OCX_API_TOKEN_FILE`. |
 | `Use HTTPS for a remote hub` | Нужен HTTPS-адрес или SSH-туннель на `http://127.0.0.1:10100`. |
 | `Hub /v1/catalog: HTTP 401/403` | Неверный ключ или хаб за фронтендом с привязкой к loopback (см. основной README). |
 | `Hub catalog is empty` | На хабе ещё не настроены провайдеры. |
 | `Another mutation or interrupted run holds …/mutation.lock` | Убедитесь, что другой запуск ocx не идёт, и удалите каталог. |
-| `File changed since apply; refusing to overwrite` | Вы правили управляемый файл после `apply`. Верните правку или осознанно удалите запись из журнала. |
+| `File changed since apply; refusing to overwrite` | `restore` защищает ручные изменения. Для повторного `apply` просмотрите и подтвердите их в TTY; без TTY запуск прервётся. |
 | `Claude Desktop currently selects a foreign profile` | Сначала выберите в Claude Desktop профиль `opencodex` (или никакой). |
 
 Подписи интерактивного меню пока на русском; неинтерактивные команды выводят текст на английском.

@@ -388,14 +388,13 @@ ocx_api PUT /api/combos -H 'Content-Type: application/json' --data-binary @- < j
 
 ```bash
 OCX_HUB=<hub-url> node ocx.mjs apply --client codex
-export OPENCODEX_API_AUTH_TOKEN='<api-key>'
+export OCX_API_TOKEN='<api-key>'
 codex -m jev-auto
 ```
 
 или постоянно — в `~/.codex/config.toml` строкой `model = "jev-auto"`.
 
-`node ocx.mjs models` показывает `jev-auto` как `routed`, потому что тип `combo` определяется по
-префиксу `combo/`. Чтобы видеть его как combo: `OCX_COMBO_PREFIXES=combo/,jev- node ocx.mjs models`.
+`node ocx.mjs models` показывает модели и маршруты, опубликованные каталогом хаба.
 
 **OpenAI-совместимый клиент:**
 

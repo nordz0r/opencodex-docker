@@ -1,15 +1,14 @@
 #!/usr/bin/env node
-// ocx.mjs — OpenCodex Hub client configurator (Node.js >= 18; Linux, macOS, Windows, WSL).
-// Points Codex CLI, Claude Code, Claude Desktop, Grok Build and Oh My Pi at a
-// remote OpenCodex hub using an existing data-plane key. Downloads the hub model
-// catalog; no local OpenCodex binary, proxy or client installer is needed.
-// Client changes are journaled; restore refuses to overwrite files edited after apply.
-// Part of https://github.com/nordz0r/opencodex-docker (MIT). Run with --help for usage.
+// Hub-only client configurator for Node.js >= 18, Windows and Linux/WSL.
+// Downloads model assignments using an existing data-plane key. No local OCX
+// binary, proxy or client installer is needed. Client changes are journaled;
+// restore refuses to overwrite files edited after apply.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import readline from 'node:readline';
 import { pathToFileURL } from 'node:url';
 
 const NATIVE_CLIENTS = ['codex', 'claude', 'claude-desktop', 'grok', 'omp'];
@@ -18,22 +17,13 @@ const CLIENT_META = {
   claude: { title: 'Claude Code', blurb: 'gateway + family slots' },
   'claude-desktop': { title: 'Claude Desktop', blurb: 'hub profile' },
   grok: { title: 'Grok Build', blurb: 'hub provider + ocx-*' },
-  omp: { title: 'Oh My Pi', blurb: 'hub provider ocx via /v1/responses' },
+  omp: { title: 'Oh My Pi', blurb: 'hub provider ocx; Responses by default' },
 };
 const OMP_PROVIDER = 'ocx';
-const OMP_API = 'openai-responses';
-const OMP_MAX_TOKENS = 32768;
-// OMP models.yml schema only accepts these; catalog may contain 'ultra' etc.
-// Fallback hub when neither --hub, OCX_HUB nor <state>/connection.json is set:
-// the default loopback publication of the opencodex-docker container.
-const DEFAULT_HUB = 'http://127.0.0.1:10100';
-// Catalog ids starting with one of these prefixes are shown as "combo" by `models`.
-const COMBO_PREFIXES = String(process.env.OCX_COMBO_PREFIXES || 'combo/')
-  .split(',').map((s) => s.trim()).filter(Boolean);
-const isComboId = (id) => COMBO_PREFIXES.some((p) => String(id).startsWith(p));
+const OMP_APIS = ['openai-responses', 'anthropic-messages'];
+const DEFAULT_HUB = 'https://ocx.goldfinches.ru';
 const IS_WIN = process.platform === 'win32';
 const DESKTOP_PROFILE_NAME = 'opencodex';
-const CODEX_CATALOG_FILE = () => path.join(codexHome(), 'opencodex-catalog.json');
 const DESKTOP_PROFILE_DIR = () => process.env.OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR
   || path.join(process.env.CLAUDE_USER_DATA_DIR || (IS_WIN
     ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Claude-3p')
@@ -69,7 +59,9 @@ const homeDir = (...seg) => path.join(os.homedir(), ...seg);
 const grokHome = () => process.env.GROK_HOME || homeDir('.grok');
 const windowsUserHome = () => {
   const winProfile = process.env.USERPROFILE;
-  if (winProfile && /^[A-Za-z]:[\\/]/.test(winProfile)) return winProfile.replace(/\\/g, '/');
+  if (winProfile && /^[A-Za-z]:[\\/]/.test(winProfile)) {
+    return IS_WIN ? winProfile : `/mnt/${winProfile[0].toLowerCase()}${winProfile.slice(2).replace(/\\/g, '/')}`;
+  }
   if (process.env.WSL_USERPROFILE) return process.env.WSL_USERPROFILE;
   // Tests set a non-Windows USERPROFILE; do not guess a host profile.
   if (winProfile) return null;
@@ -82,7 +74,7 @@ const windowsUserHome = () => {
     const scored = fs.readdirSync(usersRoot).flatMap((name) => {
       if (skip.has(name) || name.startsWith('.')) return [];
       const home = path.join(usersRoot, name);
-      const score = ['.opencodex', '.grok', '.codex', '.claude']
+      const score = ['.omp', '.grok', '.codex', '.claude']
         .filter((dir) => isDir(path.join(home, dir))).length;
       return score ? [{ home, score }] : [];
     }).sort((a, b) => b.score - a.score);
@@ -106,17 +98,14 @@ const grokHomes = () => {
     homes.push(p);
   };
   add(grokHome());
-  add(windowsGrokHome());
+  if (!process.env.GROK_HOME) add(windowsGrokHome());
   return homes;
 };
 const grokHomesForWrite = () => {
   const homes = grokHomes();
-  if (homes.length) return homes;
-  if (findOnPath('grok')) return [grokHome()];
-  return [];
+  return homes.length ? homes : (findOnPath('grok') ? [grokHome()] : []);
 };
 const codexHome = () => process.env.CODEX_HOME || homeDir('.codex');
-const opencodexHome = () => process.env.OPENCODEX_HOME || homeDir('.opencodex');
 const claudeHome = () => process.env.CLAUDE_CONFIG_DIR || homeDir('.claude');
 const windowsClaudeHome = () => {
   const winHome = windowsUserHome();
@@ -153,7 +142,7 @@ const collectHomes = (...candidates) => {
   }
   return homes;
 };
-const ompHomes = () => collectHomes(ompHome(), windowsOmpHome());
+const ompHomes = () => collectHomes(ompHome(), process.env.OMP_HOME ? null : windowsOmpHome());
 const ompHomesForWrite = () => {
   const homes = ompHomes();
   if (homes.length) return homes;
@@ -165,7 +154,7 @@ const ompAgentDir = (home) => path.join(home, 'agent');
 // ---------------- file log ----------------
 
 function logFilePath() {
-  return process.env.OCX_LOG_FILE || path.join(os.homedir(), '.ocx-export', 'ocx-export.log');
+  return process.env.OCX_LOG_FILE || path.join(stateHome(), 'ocx-export.log');
 }
 
 function redact(text) {
@@ -213,26 +202,73 @@ const termWidth = () => {
 
 const write = (line) => process.stdout.write(`${line}\n`);
 const info = (line) => { write(line); flog(line); };
-const logOk = (line) => write(`${useColor ? '\x1b[32m✓\x1b[39m ' : '✓ '}${line}`);
-const warn = (line) => { process.stderr.write(`${line}\n`); flog(`warn: ${line}`); };
 
 // ---------------- hub connection and reversible file updates ----------------
 
 const stateHome = () => process.env.OCX_STATE_HOME || homeDir('.ocx-export');
 const connectionPath = () => path.join(stateHome(), 'connection.json');
-const keyFilePath = () => process.env.OCX_API_TOKEN_FILE || path.join(stateHome(), 'api-key');
-const readApiKey = () => {
-  const fromEnv = String(process.env.OCX_API_TOKEN || '').trim();
-  if (fromEnv) return fromEnv;
-  for (const file of [keyFilePath(), path.join(opencodexHome(), 'service-api-token')]) {
-    try {
-      const value = fs.readFileSync(file, 'utf8').trim();
-      if (value) return value;
-    } catch { /* try the next explicit token source */ }
-  }
-  return '';
+const keyFilePath = () => path.join(stateHome(), 'api-key');
+const readTrimmedFile = (file) => {
+  try { return fs.readFileSync(file, 'utf8').trim(); }
+  catch { return ''; }
 };
-const catalogPathForCodex = () => CODEX_CATALOG_FILE();
+const opencodexTokenFiles = () => {
+  const files = [];
+  const seen = new Set();
+  const add = (home) => {
+    if (!home) return;
+    const file = path.resolve(home, '.opencodex', 'service-api-token');
+    const key = IS_WIN ? file.toLowerCase() : file;
+    if (seen.has(key)) return;
+    seen.add(key);
+    files.push(file);
+  };
+  add(os.homedir());
+  add(windowsUserHome());
+  return files;
+};
+const resolveApiKey = () => {
+  const fromEnv = String(process.env.OCX_API_TOKEN || '').trim();
+  if (fromEnv) return { token: fromEnv, source: 'OCX_API_TOKEN (environment)' };
+  const explicit = String(process.env.OCX_API_TOKEN_FILE || '').trim();
+  if (explicit) {
+    let raw;
+    try { raw = fs.readFileSync(explicit, 'utf8'); }
+    catch { die(`Cannot read OCX_API_TOKEN_FILE (${explicit}); it is missing or unreadable. Other key files are not used.`); }
+    const token = raw.trim();
+    if (!token) die(`OCX_API_TOKEN_FILE (${explicit}) is empty. Other key files are not used.`);
+    return { token, source: `OCX_API_TOKEN_FILE (${explicit})` };
+  }
+  const own = readTrimmedFile(keyFilePath());
+  if (own) return { token: own, source: keyFilePath() };
+  for (const file of opencodexTokenFiles()) {
+    const token = readTrimmedFile(file);
+    if (token) return { token, source: file };
+  }
+  return { token: '', source: 'none' };
+};
+const readApiKey = () => resolveApiKey().token;
+function missingApiKey() {
+  die([
+    'No hub API key found.',
+    'Supply a token without passing it as an argument (the token is never printed):',
+    '  node ocx.mjs configure                  hidden TTY input',
+    '  node ocx.mjs configure --token-stdin     non-TTY; pipe or redirect the token',
+    '  or set OCX_API_TOKEN / OCX_API_TOKEN_FILE',
+    'An existing ~/.opencodex/service-api-token (or the Windows equivalent) is used automatically when present.',
+  ].join('\n'));
+}
+const tokenFileForCodexLaunch = () => {
+  const explicit = String(process.env.OCX_API_TOKEN_FILE || '').trim();
+  if (explicit) return path.resolve(explicit);
+  const own = path.resolve(keyFilePath());
+  if (readTrimmedFile(own)) return own;
+  for (const file of opencodexTokenFiles()) {
+    if (readTrimmedFile(file)) return file;
+  }
+  return own;
+};
+const catalogPathForCodex = () => path.join(codexHome(), 'opencodex-catalog.json');
 const journalPath = () => path.join(stateHome(), 'integrations.json');
 let activeWrites = null;
 let activeClient = null;
@@ -257,8 +293,10 @@ function fileSnapshot(file) {
   }
 }
 
-function sameSnapshot(a, b) {
-  return a === null || b === null ? a === b : a.data === b.data && a.mode === b.mode;
+function sameSnapshot(a, b, platform = process.platform) {
+  if (a === null || b === null) return a === b;
+  if (a.data !== b.data) return false;
+  return platform === 'win32' || a.mode === b.mode;
 }
 
 function putSnapshot(file, snapshot) {
@@ -302,12 +340,96 @@ function loadJournal() {
   return journal;
 }
 
+// The two states a journal entry accepts: what ocx.mjs last wrote (`after`) and
+// the state a half-finished commit may have left behind (`previous`). Anything
+// else is a manual or concurrent edit. Returns true when confirmation is needed.
+function journalDrift(snapshot, entry) {
+  if (sameSnapshot(snapshot, entry.after)) return false;
+  if (Object.hasOwn(entry, 'previous') && sameSnapshot(snapshot, entry.previous)) return false;
+  return true;
+}
+
 function assertJournalCurrent(file, entry) {
   const current = fileSnapshot(file);
-  if (!sameSnapshot(current, entry.after) && !(Object.hasOwn(entry, 'previous') && sameSnapshot(current, entry.previous))) {
-    die(`File changed since apply; refusing to overwrite: ${file}`);
-  }
+  if (journalDrift(current, entry)) die(`File changed since apply; refusing to overwrite: ${file}`);
   return current;
+}
+
+const snapshotText = (snapshot) => (snapshot ? Buffer.from(snapshot.data, 'base64').toString('utf8') : '');
+
+// Line diff of the manual edits apply is about to overwrite. Bounded so a fully
+// rewritten file cannot flood the terminal; falls back to a prefix/suffix diff
+// when the LCS table would be too large.
+function compactDiff(beforeText, afterText, limit = 60) {
+  const a = String(beforeText).split('\n');
+  const b = String(afterText).split('\n');
+  const out = [];
+  if (a.length * b.length > 4_000_000) {
+    let head = 0;
+    while (head < a.length && head < b.length && a[head] === b[head]) head += 1;
+    let tail = 0;
+    while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail += 1;
+    for (const line of a.slice(head, a.length - tail)) out.push(`- ${line}`);
+    for (const line of b.slice(head, b.length - tail)) out.push(`+ ${line}`);
+  } else {
+    const width = b.length + 1;
+    const table = new Int32Array((a.length + 1) * width);
+    for (let i = a.length - 1; i >= 0; i -= 1) {
+      for (let j = b.length - 1; j >= 0; j -= 1) {
+        table[i * width + j] = a[i] === b[j]
+          ? table[(i + 1) * width + j + 1] + 1
+          : Math.max(table[(i + 1) * width + j], table[i * width + j + 1]);
+      }
+    }
+    let i = 0;
+    let j = 0;
+    while (i < a.length && j < b.length) {
+      if (a[i] === b[j]) { i += 1; j += 1; continue; }
+      if (table[(i + 1) * width + j] >= table[i * width + j + 1]) { out.push(`- ${a[i]}`); i += 1; }
+      else { out.push(`+ ${b[j]}`); j += 1; }
+    }
+    for (; i < a.length; i += 1) out.push(`- ${a[i]}`);
+    for (; j < b.length; j += 1) out.push(`+ ${b[j]}`);
+  }
+  const changed = out.length;
+  return { lines: changed > limit ? [...out.slice(0, limit), `… ${changed - limit} more changed line(s)`] : out, changed };
+}
+
+// Interactive yes/no. Returns null when no terminal is available — piped input,
+// CI, or an explicit OCX_NONINTERACTIVE run — which callers must treat as
+// "cannot confirm", never as consent.
+function promptContinue(question) {
+  if (process.env.OCX_NONINTERACTIVE) return Promise.resolve(null);
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    // The interactive menu leaves stdin cooked before it calls apply, but never
+    // assume it: drop raw mode for the prompt and put it back afterwards.
+    const wasRaw = Boolean(process.stdin.isRaw);
+    if (wasRaw) { try { process.stdin.setRawMode(false); } catch { /* ignore */ } }
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(question, (answer) => {
+      rl.close();
+      if (wasRaw) { try { process.stdin.setRawMode(true); } catch { /* ignore */ } }
+      resolve(/^y(es)?$/i.test(answer.trim()));
+    });
+  });
+}
+
+async function confirmOverwrite(conflicts, current) {
+  write(`manual changes detected in ${conflicts.length} managed file(s):`);
+  for (const conflict of conflicts) {
+    const { lines, changed } = compactDiff(snapshotText(conflict.written), snapshotText(conflict.snapshot));
+    write('');
+    write(`  ${conflict.file}  (${changed} changed line(s))`);
+    for (const line of lines) write(`    ${redact(line).replace(/(apiKey\s*[:=]\s*).*/i, '$1[redacted]')}`);
+  }
+  write('');
+  const answer = await promptContinue('Overwrite these files and continue? [y/N] ');
+  if (answer === null) {
+    die(`Manual changes present and no interactive confirmation available; refusing to overwrite: ${conflicts.map((c) => c.file).join(', ')}`);
+  }
+  if (!answer) die('Aborted at the overwrite prompt; no changes made');
+  for (const conflict of conflicts) current.set(conflict.file, conflict.snapshot);
 }
 
 async function withStateLock(action) {
@@ -322,14 +444,23 @@ async function withStateLock(action) {
   finally { fs.rmdirSync(lock); }
 }
 
-function commitWrites(journal) {
+async function commitWrites(journal) {
   const original = structuredClone(journal);
   const current = new Map();
+  const conflicts = [];
   for (const [file, change] of activeWrites) {
     const entry = journal.files[file];
     if (entry && entry.client !== change.client) die(`File belongs to another client: ${file}`);
-    const before = entry ? assertJournalCurrent(file, entry) : fileSnapshot(file);
-    current.set(file, before);
+    const snapshot = fileSnapshot(file);
+    // Manual edits are shown and confirmed before anything is written; a declined
+    // prompt leaves the journal untouched, so the next run re-offers the same diff.
+    if (entry && journalDrift(snapshot, entry)) conflicts.push({ file, snapshot, written: entry.after });
+    else current.set(file, snapshot);
+  }
+  if (conflicts.length) await confirmOverwrite(conflicts, current);
+  for (const [file, change] of activeWrites) {
+    const entry = journal.files[file];
+    const before = current.get(file);
     journal.files[file] = { client: change.client, before: entry ? entry.before : before, after: change.after, previous: before };
   }
   // Persist both acceptable states before touching client files, so an interrupted
@@ -375,8 +506,14 @@ function restoreClients(clients) {
   }
 }
 
-function resolveHub(opts = {}) {
-  return validateHub(opts.hub || process.env.OCX_HUB || readJsonFile(connectionPath())?.hub || DEFAULT_HUB);
+function resolveConnection(opts = {}) {
+  const saved = readJsonFile(connectionPath(), {});
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) die('Invalid saved connection');
+  return {
+    saved,
+    hub: validateHub(opts.hub || process.env.OCX_HUB || saved.hub || DEFAULT_HUB),
+    ompApi: saved.ompApi === undefined ? 'openai-responses' : saved.ompApi,
+  };
 }
 
 function validateHub(hub) {
@@ -391,24 +528,21 @@ function validateHub(hub) {
   return url.origin;
 }
 
-function connectionFromConfig() {
-  const connection = readJsonFile(connectionPath());
-  if (!connection || typeof connection.hub !== 'string') return null;
-  return { state: 'connected', serverUrl: validateHub(connection.hub), selectedClients: connection.selectedClients || NATIVE_CLIENTS, source: 'connection.json' };
+function validateOmpApi(api) {
+  if (!OMP_APIS.includes(api)) die('Invalid OMP API; use configure --omp-api openai-responses|anthropic-messages');
+  return api;
 }
 
-function readServiceToken() { return readApiKey(); }
-function readAdmissionToken() { return readApiKey(); }
 
-async function readHubCatalog(hub, token = readApiKey()) {
-  const data = await hubJson(hub, '/v1/catalog', token);
+async function readHubCatalog(context) {
+  const data = await context.request('/v1/catalog');
   const models = catalogModelsFromData(data);
   if (!models.length) die('Hub catalog is empty; refusing to write client configuration');
   return { data, models };
 }
 
 
-async function writeClaudeDesktopHubProfile(hub, token, snapshot) {
+function writeClaudeDesktopHubProfile(hub, token, snapshot) {
   if (!Array.isArray(snapshot?.models) || snapshot.models.length === 0 || snapshot.models.length > 256) {
     die('Hub returned an empty or oversized Claude Desktop model snapshot');
   }
@@ -449,22 +583,47 @@ async function writeClaudeDesktopHubProfile(hub, token, snapshot) {
   stageFile(metaPath, `${JSON.stringify({ ...meta, appliedId: id, entries }, null, 2)}\n`);
 }
 
-function connectionState() { return { code: 0, connection: connectionFromConfig() }; }
 
 
 
-async function catalogGrokModelsFromHub(hub, token) {
-  return (await readHubCatalog(hub, token)).models;
+
+function requestContext(opts = {}) {
+  const resolved = resolveConnection(opts);
+  const { token, source } = resolveApiKey();
+  if (!token) missingApiKey();
+  const requests = new Map();
+  return {
+    ...resolved, token, source,
+    // `anthropic: false` drops the anthropic-version header. Sending it to a bare
+    // `/v1/models` makes the hub answer with the Anthropic-shaped Claude pool
+    // (28 claude rows, no capabilities, no native GPT models) instead of the
+    // OpenAI-compatible listing — a header-driven shape switch, not an error.
+    request(endpoint, { anthropic = true } = {}) {
+      const key = `${anthropic ? 'a' : 'o'}:${endpoint}`;
+      if (!requests.has(key)) requests.set(key, hubJson(resolved.hub, endpoint, token, source, anthropic));
+      return requests.get(key);
+    },
+  };
 }
 
-async function hubJson(hub, endpoint, token) {
-  if (!token) die('Missing hub admission key: set OCX_API_TOKEN or create a connection key file');
-  const res = await fetch(`${validateHub(hub)}${endpoint}`, {
-    headers: { Authorization: `Bearer ${token}`, 'x-opencodex-api-key': token, 'anthropic-version': '2023-06-01', Accept: 'application/json' },
-    redirect: 'error',
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) die(`Hub ${endpoint}: HTTP ${res.status}`);
+async function hubJson(hub, endpoint, token, source, anthropic = true) {
+  const headers = { Authorization: `Bearer ${token}`, 'x-opencodex-api-key': token, Accept: 'application/json' };
+  if (anthropic) headers['anthropic-version'] = '2023-06-01';
+  let res;
+  try {
+    res = await fetch(`${hub}${endpoint}`, {
+      headers,
+      redirect: 'error',
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    die(`Hub ${endpoint}: request failed (network, redirect, or 15s timeout)`);
+  }
+  if (!res.ok) {
+    const detail = res.status === 401 ? 'Hub rejected the selected API key.'
+      : res.status === 403 ? 'The selected API key has no access to this endpoint.' : 'Hub request failed.';
+    die(`Hub ${endpoint}: HTTP ${res.status} — ${detail}\n  hub: ${hub}\n  key source: ${source} (value hidden)\n  ${res.status === 401 ? 'Check this key or update it with node ocx.mjs configure; lower-priority keys are not tried automatically.' : 'Check the Hub and selected key.'}`);
+  }
   try { return await res.json(); } catch { die(`Hub ${endpoint}: invalid JSON`); }
 }
 
@@ -472,7 +631,6 @@ async function hubJson(hub, endpoint, token) {
 
 const CLAUDE_ENV_MARKER = '_ocx_export_managed';
 const CLAUDE_LEGACY_ENV_MARKER = '__ managed by ocx-export \u2014 do not edit manually __';
-const CLAUDE_BASHRC_HOOK = '# opencodex claude-env hook';
 const CLAUDE_TIER_FAMILIES = ['opus', 'sonnet', 'fable', 'haiku'];
 const CLAUDE_TIER_ENV = {
   opus: 'ANTHROPIC_DEFAULT_OPUS_MODEL',
@@ -545,27 +703,16 @@ function claudeTierSlotsFromHub(cliModels, desktopSnapshot) {
   return { slots, missing, remappedPinned: [] };
 }
 
-async function claudeFetchHubCatalog(hub, token = readApiKey()) {
-  if (!token) return { error: 'hub key missing' };
-  const origin = new URL(validateHub(hub)).origin;
-  const headers = { 'anthropic-version': '2023-06-01', 'x-opencodex-api-key': token, Accept: 'application/json' };
-  try {
-    const [cliRes, deskRes] = await Promise.all([
-      fetch(`${origin}/v1/models?limit=1000&ids=cli`, { headers, redirect: 'error', signal: AbortSignal.timeout(5_000) }),
-      fetch(`${origin}/v1/models?ids=desktop&format=desktop-config`, { headers, redirect: 'error', signal: AbortSignal.timeout(5_000) }),
-    ]);
-    if (!cliRes.ok) return { error: `cli catalog HTTP ${cliRes.status}` };
-    const cliBody = await cliRes.json();
-    if (!Array.isArray(cliBody.data)) return { error: 'cli catalog invalid' };
-    const cliModels = cliBody.data.filter((m) => m && typeof m.id === 'string' && m.id)
-      .map((m) => ({ id: m.id, display_name: typeof m.display_name === 'string' ? m.display_name : '' }));
-    let desktop = { models: [] };
-    if (deskRes.ok) {
-      const body = await deskRes.json();
-      if (body?.version === 1 && Array.isArray(body.models)) desktop = body;
-    }
-    return { origin, token, cliModels, desktop };
-  } catch { return { error: 'catalog request failed' }; }
+async function claudeFetchHubCatalog(context) {
+  const [cliBody, desktop] = await Promise.all([
+    context.request('/v1/models?limit=1000&ids=cli'),
+    context.request('/v1/models?ids=desktop&format=desktop-config'),
+  ]);
+  if (!Array.isArray(cliBody?.data)) die('Hub returned an invalid Claude CLI catalog');
+  if (desktop?.version !== 1 || !Array.isArray(desktop.models)) die('Hub returned an unsupported Claude Desktop snapshot');
+  const cliModels = cliBody.data.filter((m) => m && typeof m.id === 'string' && m.id)
+    .map((m) => ({ id: m.id, display_name: typeof m.display_name === 'string' ? m.display_name : '' }));
+  return { origin: context.hub, token: context.token, cliModels, desktop };
 }
 
 // The hub assignments expose models as real Claude snapshot aliases
@@ -595,18 +742,6 @@ function claudeAliasForCliModel(cliModel, aliasByNorm) {
   return `${alias}${cliModel.id.slice(base.length)}`;
 }
 
-// Fallback for pinned ids that are no longer in the CLI catalog: rebuild the
-// display-name shape ("model (provider)") from the claude-ocx-<provider>--<model> id.
-function claudeAliasForPinnedId(pinned, cliModels, aliasByNorm) {
-  const viaCatalog = claudeAliasForCliModel((cliModels || []).find((m) => m && m.id === pinned), aliasByNorm);
-  if (viaCatalog) return viaCatalog;
-  const suffixed = /\[1m\]$|--fast$/i.test(pinned);
-  const base = suffixed ? pinned.replace(/\[1m\]$/i, '').replace(/--fast$/i, '') : pinned;
-  const parsed = /^claude-ocx\d*-(.+?)--(.+)$/.exec(base);
-  if (!parsed) return null;
-  const alias = aliasByNorm.get(claudeNormLabel(`${parsed[2]} (${parsed[1]})`));
-  return alias ? `${alias}${pinned.slice(base.length)}` : null;
-}
 
 function buildClaudePickerOptions(desktopSnapshot) {
   const rows = Array.isArray(desktopSnapshot?.models) ? desktopSnapshot.models : [];
@@ -631,7 +766,6 @@ function writeClaudeGatewayCache(origin, cliModels, desktopSnapshot) {
   const written = [];
   for (const home of claudeHomes()) {
     const cacheDir = path.join(home, 'cache');
-    fs.mkdirSync(cacheDir, { recursive: true });
     const cachePath = path.join(cacheDir, 'gateway-models.json');
     stageFile(cachePath, JSON.stringify({ baseUrl: origin, fetchedAt: Date.now(), models }));
     written.push(cachePath);
@@ -651,14 +785,6 @@ function writeClaudeManagedEnv(origin, token, slots, desktopSnapshot) {
   // catalog knows, so pinned rows never fall into the unknown-model 200k path.
   const pickerOptions = buildClaudePickerOptions(desktopSnapshot);
 
-  const envShPath = path.join(opencodexHome(), 'claude-env.sh');
-  stageFile(envShPath, null);
-  const bashrcPath = homeDir('.bashrc');
-  try {
-    const bashrc = fs.readFileSync(bashrcPath, 'utf8');
-    const cleaned = bashrc.replace(/\n?# opencodex claude-env hook\n\[.*claude-env\.sh.*\n?/g, '\n');
-    if (cleaned !== bashrc) stageFile(bashrcPath, cleaned);
-  } catch { /* absent bashrc */ }
 
   for (const home of claudeHomes()) {
     const settings = readClaudeSettings(home);
@@ -684,9 +810,7 @@ function writeClaudeManagedEnv(origin, token, slots, desktopSnapshot) {
   }
 }
 
-async function claudeSettingsEnvApply(hub, token = readApiKey()) {
-  const catalog = await claudeFetchHubCatalog(hub, token);
-  if (catalog.error) die(`Claude hub catalog: ${catalog.error}`);
+function claudeSettingsEnvApply(catalog) {
   const { slots, missing, remappedPinned } = claudeTierSlotsFromHub(catalog.cliModels, catalog.desktop);
   writeClaudeManagedEnv(catalog.origin, catalog.token, slots, catalog.desktop);
   const cache = writeClaudeGatewayCache(catalog.origin, catalog.cliModels, catalog.desktop);
@@ -698,13 +822,6 @@ async function claudeSettingsEnvApply(hub, token = readApiKey()) {
 const tomlString = (v) => `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 const grokAlias = (id) => `ocx-${String(id).replace(/[^A-Za-z0-9_-]/g, '-')}`;
 
-function grokHubPresent(configPath, hub) {
-  if (!fs.existsSync(configPath)) return false;
-  let text = '';
-  try { text = fs.readFileSync(configPath, 'utf8'); } catch { return false; }
-  if (text.includes(GROK_BEGIN)) return true;
-  return text.includes('[model_providers.opencodex]') && text.includes(hub);
-}
 
 function stripGrokHubTables(text) {
   const kept = [];
@@ -727,14 +844,14 @@ function stripGrokHubTables(text) {
   return `${kept.join('\n').replace(/\n+$/, '')}\n`;
 }
 
-function sanitizeGrokReasoningEfforts(levels) {
+function catalogReasoningEfforts(levels) {
+  if (!Array.isArray(levels)) return { efforts: null, descriptions: {} };
   const seen = new Set();
   const out = [];
   const descriptions = {};
-  const allowed = new Set(GROK_REASONING_EFFORTS);
   for (const level of Array.isArray(levels) ? levels : []) {
     const effort = typeof level === 'string' ? level : level && level.effort;
-    if (!effort || !allowed.has(effort) || seen.has(effort)) continue;
+    if (typeof effort !== 'string' || !effort || seen.has(effort)) continue;
     seen.add(effort);
     out.push(effort);
     const desc = typeof level === 'object' && level && typeof level.description === 'string' ? level.description.trim() : '';
@@ -743,24 +860,7 @@ function sanitizeGrokReasoningEfforts(levels) {
   return { efforts: out, descriptions };
 }
 
-function grokDefaultReasoningEffort(efforts, configuredDefault) {
-  if (!efforts.length) return undefined;
-  if (configuredDefault && efforts.includes(configuredDefault)) return configuredDefault;
-  if (efforts.includes('medium')) return 'medium';
-  if (efforts.includes('high')) return 'high';
-  return efforts[0];
-}
 
-function catalogSummary(catalogPath = path.join(codexHome(), 'opencodex-catalog.json')) {
-  const models = catalogGrokModels(catalogPath);
-  const combos = models.filter((m) => isComboId(m.id));
-  return {
-    count: models.length,
-    combos: combos.map((m) => m.id),
-    ids: models.map((m) => m.id),
-    names: Object.fromEntries(models.map((m) => [m.id, m.name])),
-  };
-}
 
 function readRootTomlKey(file, key) {
   if (!fs.existsSync(file)) return null;
@@ -771,23 +871,18 @@ function readRootTomlKey(file, key) {
   } catch { return null; }
 }
 
-function ompInputModalities(row) {
-  const mods = Array.isArray(row?.input_modalities) ? row.input_modalities.map(String) : [];
-  const input = [];
-  if (mods.includes('text') || !mods.length) input.push('text');
-  if (mods.includes('image') || row?.supports_image_detail_original) input.push('image');
-  return input;
+function catalogInputModalities(row) {
+  return Array.isArray(row.input_modalities)
+    ? [...new Set(row.input_modalities.filter((value) => typeof value === 'string'))]
+    : null;
 }
 
-// Catalog under-reports usable context for some models; hub accepts up to these limits.
-const OMP_CONTEXT_OVERRIDES = {
-  'xai/grok-4.7': 500000,
-};
+function catalogTokenLimit(value) {
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
 
-function ompContextWindow(row) {
-  const id = String(row?.slug ?? row?.id ?? '');
-  if (OMP_CONTEXT_OVERRIDES[id] != null) return OMP_CONTEXT_OVERRIDES[id];
-  return row?.context_window != null ? Number(row.context_window) : null;
+function catalogIsCombo(row, id) {
+  return row?.owned_by === 'combo' || id.startsWith('gldf-') || id.startsWith('combo/');
 }
 
 function catalogModelsFromData(data) {
@@ -797,59 +892,110 @@ function catalogModelsFromData(data) {
     if (!row || (row.visibility ?? 'list') === 'hide') continue;
     const id = String(row.slug ?? row.id ?? '');
     if (!id) continue;
-    const { efforts, descriptions } = sanitizeGrokReasoningEfforts(row.supported_reasoning_levels);
+    const { efforts, descriptions } = catalogReasoningEfforts(row.supported_reasoning_levels);
     const summary = typeof row.default_reasoning_summary === 'string' ? row.default_reasoning_summary : '';
     byAlias.set(grokAlias(id), {
       id,
       name: typeof row.display_name === 'string' && row.display_name ? row.display_name : `OCX ${id}`,
-      context: (() => { const cw = ompContextWindow(row); return cw != null ? String(cw) : null; })(),
-      contextWindow: ompContextWindow(row),
-      input: ompInputModalities(row),
+      context: catalogTokenLimit(row.context_window)?.toString() ?? null,
+      contextWindow: catalogTokenLimit(row.context_window),
+      maxTokens: null,
+      input: catalogInputModalities(row),
+      reasoning: null,
       reasoningEfforts: efforts,
       reasoningDescriptions: descriptions,
-      defaultReasoningEffort: grokDefaultReasoningEffort(efforts, row.default_reasoning_level),
+      defaultReasoningEffort: typeof row.default_reasoning_level === 'string' ? row.default_reasoning_level : null,
       reasoningSummary: ['none', 'auto', 'concise', 'detailed'].includes(summary) ? summary : null,
+      combo: catalogIsCombo(row, id),
     });
   }
   return [...byAlias.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
-function catalogGrokModels(catalogPath) {
-  try {
-    return catalogModelsFromData(JSON.parse(fs.readFileSync(catalogPath, 'utf8')));
-  } catch {
-    return [];
+
+
+
+// Per-effort aliases (`gpt-6.1-sol--high`): OMP picks effort per turn through
+// the `judge` role, so a pinned-effort duplicate only adds picker noise.
+const OMP_VARIANT_ID = /--(?:fast|minimal|low|medium|high|xhigh|max|ultra)$/;
+
+// `claude-*` rows are Claude client aliases (family slots and gateway picker ids)
+// owned by settings.json and the gateway model cache, not OMP providers. They leak
+// in when the hub is queried with the anthropic-version header; grok filters the
+// same prefix rather than trusting the listing.
+const OMP_EXCLUDED_PREFIX = ['claude-'];
+
+// The two endpoints disagree on routing separators for the same upstream model
+// (`kilo/kilo-auto/free` vs `kilo/kilo-auto-free`), so dedupe on a separator-free
+// key and keep the catalog slug, which is what the hub's own catalog advertises.
+const ompModelKey = (id) => String(id).toLowerCase().replace(/\//g, '-');
+
+function ompEffortList(values) {
+  const allowed = new Set(OMP_REASONING_EFFORTS);
+  const out = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    if (typeof value !== 'string' || !allowed.has(value) || out.includes(value)) continue;
+    out.push(value);
   }
+  return out;
 }
 
-async function fetchHubCatalog(hub, token) {
-  if (!token) throw new Error('missing token');
-  const origin = new URL(hub).origin;
-  const res = await fetch(`${origin}/v1/catalog`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'x-opencodex-api-key': token,
-      Accept: 'application/json',
-    },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`HTTP ${res.status}${body ? `: ${body.slice(0, 180)}` : ''}`);
-  }
-  return res.json();
+function ompDisplayName(row, fallback) {
+  return typeof row?.display_name === 'string' && row.display_name ? row.display_name : fallback;
 }
 
-async function loadOmpCatalog(hub, token) {
-  let data;
-  try {
-    data = await fetchHubCatalog(hub, token);
-  } catch (err) {
-    die(`omp: hub catalog fetch failed: ${err instanceof Error ? err.message : err}`);
+// OMP is fed from /v1/models — the gateway's own capability surface (real context
+// window, output cap, reasoning tiers, `reasoning_effort` default) — plus catalog
+// rows the Codex picker hides but the hub still routes (`gpt-6-sol`, `gpt-5.6-sol`,
+// `gpt-5.6-luna`). /v1/catalog is Codex-shaped: it caps the gpt-5.6/6.x family at
+// 272k while the gateway serves the full window, so it contributes ids, display
+// names, and limits only for models /v1/models does not list at all.
+function ompModelsFromHub(modelsData, catalogData) {
+  const catalogRows = Array.isArray(catalogData?.models) ? catalogData.models : [];
+  const catalogByKey = new Map();
+  for (const row of catalogRows) {
+    const slug = typeof row?.slug === 'string' ? row.slug : '';
+    if (slug && !catalogByKey.has(ompModelKey(slug))) catalogByKey.set(ompModelKey(slug), row);
   }
-  const models = catalogModelsFromData(data);
-  if (!models.length) die('omp: hub catalog is empty');
-  return { models, source: 'http' };
+  const byKey = new Map();
+  for (const row of Array.isArray(modelsData?.data) ? modelsData.data : []) {
+    const id = typeof row?.id === 'string' ? row.id : '';
+    if (!id || OMP_VARIANT_ID.test(id) || OMP_EXCLUDED_PREFIX.some((prefix) => id.startsWith(prefix))) continue;
+    const caps = row.capabilities && typeof row.capabilities === 'object' ? row.capabilities : {};
+    const catalogRow = catalogByKey.get(ompModelKey(id));
+    const effortRows = Array.isArray(row.reasoning_efforts) ? row.reasoning_efforts : [];
+    const efforts = ompEffortList(effortRows.map((entry) => entry?.value));
+    const flagged = effortRows.find((entry) => entry?.default === true)?.value;
+    const preferred = typeof flagged === 'string' ? flagged : (typeof row.reasoning_effort === 'string' ? row.reasoning_effort : '');
+    byKey.set(ompModelKey(id), {
+      id: typeof catalogRow?.slug === 'string' && catalogRow.slug ? catalogRow.slug : id,
+      name: ompDisplayName(catalogRow, id),
+      contextWindow: catalogTokenLimit(caps.context_length) ?? catalogTokenLimit(catalogRow?.context_window),
+      maxTokens: catalogTokenLimit(caps.max_output_tokens),
+      input: catalogInputModalities(caps),
+      reasoning: typeof caps.supports_reasoning === 'boolean' ? caps.supports_reasoning : null,
+      reasoningEfforts: efforts,
+      defaultReasoningEffort: efforts.includes(preferred) ? preferred : (efforts[0] ?? null),
+    });
+  }
+  for (const row of catalogRows) {
+    const slug = typeof row?.slug === 'string' ? row.slug : '';
+    if (!slug || OMP_EXCLUDED_PREFIX.some((prefix) => slug.startsWith(prefix)) || byKey.has(ompModelKey(slug))) continue;
+    const { efforts } = catalogReasoningEfforts(row.supported_reasoning_levels);
+    const list = ompEffortList(efforts);
+    const preferred = typeof row.default_reasoning_level === 'string' ? row.default_reasoning_level : '';
+    byKey.set(ompModelKey(slug), {
+      id: slug,
+      name: ompDisplayName(row, slug),
+      contextWindow: catalogTokenLimit(row.context_window),
+      maxTokens: null,
+      input: catalogInputModalities(row),
+      reasoning: list.length ? true : null,
+      reasoningEfforts: list,
+      defaultReasoningEffort: list.includes(preferred) ? preferred : (list[0] ?? null),
+    });
+  }
+  return [...byKey.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
 function grokPreferredDefault(models, currentDefault) {
@@ -934,26 +1080,23 @@ function pinGrokToOcxModels(text, models) {
   const updates = { allowed_models: '["ocx-*"]' };
   if (nextDefault) updates.default = tomlString(nextDefault);
   const defModel = models.find((m) => grokAlias(m.id) === nextDefault);
-  const ladder = defModel?.reasoningEfforts || [];
+  const ladder = defModel?.reasoning === false ? [] : (defModel?.reasoningEfforts || []).filter((effort) => GROK_REASONING_EFFORTS.includes(effort));
   const currentEffort = readTomlTableKey(text, 'models', 'default_reasoning_effort');
-  if (ladder.length) {
-    if (currentEffort && ladder.includes(currentEffort)) {
-      updates.default_reasoning_effort = tomlString(currentEffort);
-    } else if (defModel.defaultReasoningEffort) {
-      updates.default_reasoning_effort = tomlString(defModel.defaultReasoningEffort);
-    }
+  const hubDefault = defModel?.defaultReasoningEffort;
+  const removeKeys = [];
+  if (currentEffort && ladder.includes(currentEffort)) {
+    updates.default_reasoning_effort = tomlString(currentEffort);
+  } else if (hubDefault && ladder.includes(hubDefault)) {
+    updates.default_reasoning_effort = tomlString(hubDefault);
+  } else {
+    removeKeys.push('default_reasoning_effort');
   }
-  return upsertTomlTableKeys(text, 'models', updates);
+  return upsertTomlTableKeys(text, 'models', updates, removeKeys);
 }
 
-function unpinGrokOcxOnly(text) {
-  const allowed = readTomlTableKey(text, 'models', 'allowed_models');
-  if (allowed && !/ocx-\*/.test(String(allowed))) return text;
-  return upsertTomlTableKeys(text, 'models', {}, ['allowed_models']);
-}
 
 function buildGrokHubBlock(hub, token, models) {
-  if (!token) die('Missing hub admission key: set OCX_API_TOKEN or OCX_API_TOKEN_FILE');
+  if (!token) missingApiKey();
   const lines = [
     GROK_BEGIN,
     '',
@@ -974,12 +1117,13 @@ function buildGrokHubBlock(hub, token, models) {
     );
     if (model.context) lines.push(`context_window = ${model.context}`);
     if (model.reasoningSummary) lines.push(`reasoning_summary = ${tomlString(model.reasoningSummary)}`);
-    if (model.defaultReasoningEffort) {
-      lines.push(
-        'supports_reasoning_effort = true',
-        `reasoning_effort = ${tomlString(model.defaultReasoningEffort)}`,
-      );
-      for (const effort of model.reasoningEfforts || []) {
+    const efforts = model.reasoning === false ? [] : (model.reasoningEfforts || []).filter((effort) => GROK_REASONING_EFFORTS.includes(effort));
+    if (efforts.length) {
+      lines.push('supports_reasoning_effort = true');
+      if (efforts.includes(model.defaultReasoningEffort)) {
+        lines.push(`reasoning_effort = ${tomlString(model.defaultReasoningEffort)}`);
+      }
+      for (const effort of efforts) {
         const option = GROK_EFFORT_OPTIONS[effort];
         const description = (model.reasoningDescriptions && model.reasoningDescriptions[effort]) || option.description;
         lines.push(
@@ -989,8 +1133,8 @@ function buildGrokHubBlock(hub, token, models) {
           `value = ${tomlString(effort)}`,
           `label = ${tomlString(option.label)}`,
           `description = ${tomlString(description)}`,
-          `default = ${effort === model.defaultReasoningEffort}`,
         );
+        if (efforts.includes(model.defaultReasoningEffort)) lines.push(`default = ${effort === model.defaultReasoningEffort}`);
       }
     }
   }
@@ -998,18 +1142,7 @@ function buildGrokHubBlock(hub, token, models) {
   return `${lines.join('\n')}\n`;
 }
 
-function grokTokenFileForHome(gHome) {
-  const winHome = windowsUserHome();
-  if (winHome && path.resolve(gHome) === path.resolve(path.join(winHome, '.grok'))) {
-    const winToken = path.join(winHome, '.opencodex', 'service-api-token');
-    if (fs.existsSync(winToken)) return winToken;
-  }
-  return path.join(opencodexHome(), 'service-api-token');
-}
 
-function readGrokAdmissionToken(tokenFile) {
-  try { return fs.readFileSync(tokenFile, 'utf8').trim(); } catch { return ''; }
-}
 
 function writeGrokHubConfig(hub, token, catalog) {
   const homes = grokHomesForWrite();
@@ -1025,18 +1158,6 @@ function writeGrokHubConfig(hub, token, catalog) {
   return results;
 }
 
-function restoreGrokHubConfig() {
-  const restored = [];
-  for (const home of grokHomes()) {
-    const configPath = path.join(home, 'config.toml');
-    if (!fs.existsSync(configPath)) continue;
-    const text = fs.readFileSync(configPath, 'utf8');
-    const next = unpinGrokOcxOnly(stripGrokHubTables(text));
-    stageFile(configPath, next);
-    restored.push(configPath);
-  }
-  return restored;
-}
 
 function yamlUnquote(value) {
   const t = String(value || '').trim();
@@ -1134,28 +1255,7 @@ function upsertYamlMapChild(text, parentKey, childKey, childBlock) {
   return `${next.join('\n').replace(/\n+$/, '')}\n`;
 }
 
-function yamlMapHasChild(lines, parentStart, parentEnd, childIndent) {
-  for (let i = parentStart + 1; i < parentEnd; i += 1) {
-    if (yamlKeyAt(lines[i], childIndent)) return true;
-  }
-  return false;
-}
 
-function removeYamlMapChild(text, parentKey, childKey) {
-  const raw = String(text || '');
-  const lines = splitYamlLines(raw);
-  const range = findYamlChildRange(lines, parentKey, childKey, 0);
-  if (range.childStart < 0) return raw.endsWith('\n') || !raw ? raw : `${raw}\n`;
-  const next = lines.slice();
-  next.splice(range.childStart, range.childEnd - range.childStart);
-  const after = findYamlChildRange(next, parentKey, childKey, 0);
-  if (after.parentStart >= 0 && !yamlMapHasChild(next, after.parentStart, after.parentEnd, after.childIndent)) {
-    next[after.parentStart] = `${parentKey}: {}`;
-    let i = after.parentStart + 1;
-    while (i < next.length && next[i].trim() === '') next.splice(i, 1);
-  }
-  return `${next.join('\n').replace(/\n+$/, '')}\n`;
-}
 
 function parseYamlFlowSeq(inline) {
   const start = inline.indexOf('[');
@@ -1243,87 +1343,36 @@ function ompEffortsFromModel(model) {
   return (model.reasoningEfforts || []).filter((effort) => allowed.has(effort));
 }
 
-function ompApiKeyYamlValue(token) {
-  const tokenFile = path.join(opencodexHome(), 'service-api-token');
-  try {
-    if (fs.existsSync(tokenFile) && fs.readFileSync(tokenFile, 'utf8').trim() === token) {
-      return IS_WIN ? `!cmd /c type "${tokenFile}"` : `!cat ${shellQuote(tokenFile)}`;
-    }
-  } catch { /* literal token */ }
-  return token;
-}
 
-function buildOmpOcxProviderBlock(hub, token, models) {
-  if (!token) die('Missing hub admission key: set OCX_API_TOKEN or create a connection key file');
+function buildOmpOcxProviderBlock(hub, token, models, api) {
+  if (!token) missingApiKey();
+  validateOmpApi(api);
   const lines = [
     `  ${OMP_PROVIDER}:`,
     `    baseUrl: ${yamlQuote(hubV1(hub))}`,
-    `    apiKey: ${yamlQuote(ompApiKeyYamlValue(token))}`,
-    `    api: openai-responses`,
+    `    apiKey: ${yamlQuote(token)}`,
+    `    api: ${api}`,
     '    auth: apiKey',
     '    models:',
   ];
   for (const model of models) {
-    const efforts = ompEffortsFromModel(model);
-    const input = (model.input && model.input.length) ? model.input : ['text'];
+    const efforts = model.reasoning === false ? [] : ompEffortsFromModel(model);
+    const input = model.input?.filter((modality) => ['text', 'image'].includes(modality));
     lines.push(`      - id: ${yamlQuote(model.id)}`);
     lines.push(`        name: ${yamlQuote(model.name || `OCX ${model.id}`)}`);
-    if (efforts.length) lines.push('        reasoning: true');
-    lines.push(`        input: [${input.join(', ')}]`);
-    if (model.contextWindow) lines.push(`        contextWindow: ${model.contextWindow}`);
-    lines.push(`        maxTokens: ${OMP_MAX_TOKENS}`);
+    if (model.reasoning !== null && model.reasoning !== undefined) lines.push(`        reasoning: ${model.reasoning}`);
+    if (input) lines.push(`        input: [${input.join(', ')}]`);
+    if (model.contextWindow !== null && model.contextWindow !== undefined) lines.push(`        contextWindow: ${model.contextWindow}`);
+    if (model.maxTokens !== null && model.maxTokens !== undefined) lines.push(`        maxTokens: ${model.maxTokens}`);
     if (efforts.length) {
-      // Model defaults outrank global auto in OMP; leave effort selection to judge.
+      const def = efforts.includes(model.defaultReasoningEffort) ? model.defaultReasoningEffort : null;
       lines.push('        thinking:');
       lines.push('          mode: effort');
       lines.push(`          efforts: [${efforts.join(', ')}]`);
+      if (def) lines.push(`          defaultLevel: ${def}`);
     }
   }
   return `${lines.join('\n')}\n`;
-}
-
-// OMP `judge` model role (modelRoles.judge in agent/config.yml): the model that
-// answers yes/no/choice/score questions for auto-thinking effort, `find` ranking,
-// eval judge()/judge_batch(), /stats frustration etc. Unset → OMP falls back to
-// typesafe/jev-latest → @tiny → @smol → @default. Apply never touches an
-// existing judge unless --omp-judge / OCX_OMP_JUDGE is given.
-const OMP_JUDGE_RESET = new Set(['auto', 'default', 'none', 'off']);
-
-function resolveOmpJudge(value, models) {
-  const raw = String(value || '').trim();
-  if (!raw) return null;
-  if (OMP_JUDGE_RESET.has(raw.toLowerCase())) return { reset: true, selector: null };
-  if (/[\s"'#]/.test(raw)) die(`omp judge: invalid model selector: ${raw}`);
-  const ids = new Set((models || []).map((m) => m.id));
-  const split = (sel) => {
-    const m = sel.match(/^(.*?)(:(?:minimal|low|medium|high|xhigh|max|off))?$/);
-    return { id: m[1], effort: m[2] || '' };
-  };
-  if (raw.startsWith(`${OMP_PROVIDER}/`)) {
-    const { id } = split(raw.slice(OMP_PROVIDER.length + 1));
-    if (!ids.has(id)) die(`omp judge: ${id} is not in the hub catalog (node ocx.mjs models)`);
-    return { reset: false, selector: raw, viaHub: true };
-  }
-  const { id, effort } = split(raw);
-  if (ids.has(id)) return { reset: false, selector: `${OMP_PROVIDER}/${id}${effort}`, viaHub: true };
-  // Foreign provider selector (e.g. codiv/openjev-latest, typesafe/jev-latest): pass through.
-  if (!raw.includes('/')) die(`omp judge: ${raw} is neither a hub catalog id nor a provider/model selector`);
-  return { reset: false, selector: raw, viaHub: false };
-}
-
-function applyOmpJudge(configText, judge) {
-  if (!judge) return configText;
-  if (judge.reset) return removeYamlMapChild(configText, 'modelRoles', 'judge');
-  return upsertYamlMapChild(configText, 'modelRoles', 'judge', `  judge: ${yamlQuote(judge.selector)}`);
-}
-
-function ompJudgeFromConfig(configText) {
-  const lines = splitYamlLines(configText);
-  const range = findYamlChildRange(lines, 'modelRoles', 'judge', 0);
-  if (range.childStart < 0) return null;
-  const m = lines[range.childStart].match(/^\s*judge\s*:\s*(.*)$/);
-  const v = m ? yamlUnquote(m[1].replace(/\s+#.*$/, '').trim()) : '';
-  return v || null;
 }
 
 function ompHubPresent(modelsPath, hub) {
@@ -1398,27 +1447,9 @@ function setRootTomlAssignment(text, key, assignment) {
   return `${lines.join('\n').replace(/\n+$/, '')}\n`;
 }
 
-function codexHubPresent(configPath, hub) {
-  if (!fs.existsSync(configPath)) return false;
-  let text = '';
-  try { text = fs.readFileSync(configPath, 'utf8'); } catch { return false; }
-  const provider = readRootTomlKey(configPath, 'model_provider');
-  if (provider && provider !== 'opencodex') return false;
-  const origin = String(hub).replace(/\/+$/, '');
-  const base = readTomlTableKey(text, CODEX_PROVIDER_TABLE, 'base_url');
-  const auth = readTomlTableKey(text, CODEX_PROVIDER_TABLE, 'requires_openai_auth');
-  const rootBase = readRootTomlKey(configPath, 'openai_base_url');
-  const loopbackLeft = isLoopbackCodexOverride(rootBase);
-  return Boolean(base && String(base).includes(origin) && auth === 'false' && !loopbackLeft);
-}
 
-async function writeCodexCatalog(hub, token) {
-  const { data } = await readHubCatalog(hub, token);
-  if (!Array.isArray(data?.models) || data.models.length === 0) die('Hub returned an invalid Codex catalog');
-  return data;
-}
 
-function writeCodexHubConfig(hub, catalog) {
+function writeCodexHubConfig(hub) {
   const configPath = codexConfigPath();
   let text = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
   text = stripRootTomlKeys(text, ['openai_base_url', 'experimental_realtime_ws_base_url'], {
@@ -1428,19 +1459,20 @@ function writeCodexHubConfig(hub, catalog) {
   text = setRootTomlAssignment(text, 'model_catalog_json', `model_catalog_json = ${tomlString(catalogPathForCodex())}`);
   text = upsertTomlTableKeys(text, CODEX_PROVIDER_TABLE, {
     name: tomlString('OpenCodex Proxy'), base_url: tomlString(hubV1(hub)), wire_api: tomlString('responses'),
-    requires_openai_auth: 'true', env_key: tomlString('OPENCODEX_API_AUTH_TOKEN'),
+    requires_openai_auth: 'false', env_key: tomlString('OCX_API_TOKEN'),
   });
   stageFile(configPath, text);
   return { configPath, baseUrl: hubV1(hub) };
 }
 
 function warnCodexLaunchToken() {
-  if (process.env.OPENCODEX_API_AUTH_TOKEN) return;
-  if (!readServiceToken()) {
-    warn('codex: service-api-token missing; provide a data-plane key before configuring Codex');
-    return;
-  }
-  warn('codex: OPENCODEX_API_AUTH_TOKEN is unset here; export it from ~/.opencodex/service-api-token before launching Codex');
+  info('codex: env_key=OCX_API_TOKEN; the variable must be set in the environment that launches Codex.');
+  if (String(process.env.OCX_API_TOKEN || '').trim()) return;
+  const file = tokenFileForCodexLaunch();
+  const command = IS_WIN
+    ? `$env:OCX_API_TOKEN = (Get-Content -Raw -LiteralPath '${file.replace(/'/g, "''")}').Trim()`
+    : `export OCX_API_TOKEN="$(cat -- ${shellQuote(file)})"`;
+  info(`codex: load the key without printing it, then launch Codex in the same shell:\n  ${command}`);
 }
 
 // ---------------- client detection ----------------
@@ -1473,24 +1505,89 @@ function clientInstalled(client) {
 
 // ---------------- commands ----------------
 
-
-function writeOmpStatusLine(opts, hub) {
-  if (opts.client.length && !opts.client.includes('omp')) return;
-  const homes = ompHomes();
-  const file = path.join(ompAgentDir(homes[0] || ompHome()), 'models.yml');
-  const present = homes.some((home) => ompHubPresent(path.join(ompAgentDir(home), 'models.yml'), hub));
-  write(`client=omp state=${present ? 'current' : 'absent'} path=${file}`);
+async function readTokenInput(fromStdin) {
+  if (fromStdin) {
+    if (process.stdin.isTTY) die('--token-stdin requires piped or redirected input; use configure for a hidden prompt');
+    let token = '';
+    for await (const chunk of process.stdin) {
+      token += chunk.toString('utf8');
+      if (token.length > 16_384) die('API key input is too long');
+    }
+    return token.trim();
+  }
+  return new Promise((resolve) => {
+    let token = '';
+    let finished = false;
+    const wasRaw = Boolean(process.stdin.isRaw);
+    const finish = (value) => {
+      if (finished) return;
+      finished = true;
+      process.stdin.removeListener('keypress', onKey);
+      process.stdin.removeListener('end', onEnd);
+      process.stdin.setRawMode(wasRaw);
+      process.stdin.pause();
+      process.stderr.write('\n');
+      resolve(value);
+    };
+    const onKey = (text, key = {}) => {
+      if (finished) return;
+      if (key.ctrl && (key.name === 'c' || key.name === 'd')) return finish(null);
+      if (key.name === 'return' || key.name === 'enter') return finish(token.trim());
+      if (key.name === 'backspace') token = token.slice(0, -1);
+      else if (text && !key.ctrl && !key.meta && !/[\x00-\x1f\x7f]/.test(text)) {
+        token += text;
+        if (token.length > 16_384) finish(null);
+      }
+    };
+    const onEnd = () => finish(null);
+    readline.emitKeypressEvents(process.stdin);
+    process.stdin.setRawMode(true);
+    process.stdin.on('keypress', onKey);
+    process.stdin.once('end', onEnd);
+    process.stdin.resume();
+    process.stderr.write('Hub API key (hidden; Enter keeps the saved key): ');
+  });
 }
+
+async function cmdConfigure(opts) {
+  await withStateLock(async () => {
+    const { hub, saved, ompApi } = resolveConnection(opts);
+    const selectedApi = validateOmpApi(opts.ompApi === undefined ? ompApi : opts.ompApi);
+    let token;
+    if (opts.tokenStdin || process.stdin.isTTY) {
+      token = await readTokenInput(opts.tokenStdin);
+      if (token === null) die('Configuration cancelled; no changes made');
+      if (opts.tokenStdin && !token) die('API key input is empty; no changes made');
+      if (/[\x00-\x1f\x7f]/.test(token)) die('API key must be a single line without control characters');
+    }
+    const connection = { ...saved, hub, ompApi: selectedApi };
+    const beforeConnection = fileSnapshot(connectionPath());
+    const beforeKey = token ? fileSnapshot(keyFilePath()) : null;
+    try {
+      if (token) putSnapshot(keyFilePath(), { data: Buffer.from(`${token}\n`).toString('base64'), mode: 0o600 });
+      writePrivateJson(connectionPath(), connection);
+    } catch (err) {
+      if (token) putSnapshot(keyFilePath(), beforeKey);
+      putSnapshot(connectionPath(), beforeConnection);
+      throw err;
+    }
+    info(`configured hub: ${hub}`);
+    info(`omp-api: ${selectedApi}`);
+    info(token ? 'API key saved privately; client files unchanged.' : 'API key unchanged; client files unchanged.');
+  });
+}
+
+
 
 function managedClientActive(client) {
   return Object.values(loadJournal().files).some((entry) => entry.client === client);
 }
 
 function cmdStatus(opts) {
-  const hub = resolveHub(opts);
-  const connection = connectionFromConfig();
-  write(`connection: ${connection ? 'configured' : 'not configured'}`);
-  write(`hub: ${connection?.serverUrl || hub}`);
+  const { hub, saved, ompApi } = resolveConnection(opts);
+  write(`connection: ${saved.hub ? 'configured' : 'not configured'}`);
+  write(`hub: ${hub}`);
+  write(`omp-api: ${OMP_APIS.includes(ompApi) ? ompApi : 'invalid saved API; use configure --omp-api openai-responses|anthropic-messages'}`);
   for (const client of NATIVE_CLIENTS) {
     if (opts.client.length && !opts.client.includes(client)) continue;
     const files = client === 'codex' ? [codexConfigPath()]
@@ -1499,13 +1596,20 @@ function cmdStatus(opts) {
           : client === 'grok' ? grokHomes().map((home) => path.join(home, 'config.toml'))
             : ompHomes().map((home) => path.join(ompAgentDir(home), 'models.yml'));
     write(`client=${client} installed=${clientInstalled(client)} state=${managedClientActive(client) ? 'current' : 'absent'} files=${files.filter((file) => fs.existsSync(file)).join(',') || 'none'}`);
-    if (client === 'omp') {
-      const cfg = ompHomes().map((home) => path.join(ompAgentDir(home), 'config.yml')).find((file) => fs.existsSync(file));
-      const judge = cfg ? ompJudgeFromConfig(fs.readFileSync(cfg, 'utf8')) : null;
-      write(`client=omp judge=${judge || 'unset (OMP default chain)'}`);
-    }
   }
-  write('catalog: fetched from the hub on demand (node ocx.mjs models)');
+  write('catalog: загружается по запросу из Hub (node ocx.mjs models)');
+}
+
+function printApplyReport(hub, source, files, clients, modelCounts) {
+  info(`OCX configuration  |  applied`);
+  info(`  Hub          ${hub}`);
+  info(`  Key source   ${source} (value hidden)`);
+  for (const client of clients) {
+    const changes = files.filter((item) => item.client === client);
+    info(`  ${CLIENT_META[client].title}  |  ${changes.length ? `${changes.length} file(s)` : 'no files changed'}${modelCounts[client] === undefined ? '' : `  |  ${modelCounts[client]} models`}`);
+    for (const { file, state } of changes) info(`    ${state.padEnd(7)} ${file}`);
+  }
+  info(`  Log          ${logFilePath()}`);
 }
 
 
@@ -1514,40 +1618,42 @@ async function cmdToggle(opts, enabled) {
   if (!opts.client.length) die('apply/restore require at least one --client');
   const unique = [...new Set(opts.client)];
   if (!unique.every((client) => NATIVE_CLIENTS.includes(client))) die('Unsupported client');
+  let report;
   await withStateLock(async () => {
     if (!enabled) {
       restoreClients(unique);
       return;
     }
-    const hub = resolveHub(opts);
-    const token = readApiKey();
-    if (!token) die('Missing hub admission key: set OCX_API_TOKEN or create a connection key file');
-    if (opts.ompJudge != null && !unique.includes('omp')) die('--omp-judge requires --client omp');
-    // OCX_OMP_JUDGE from the environment only applies when omp is selected; ignore it otherwise.
-    const ompJudgeArg = unique.includes('omp') ? (opts.ompJudge ?? process.env.OCX_OMP_JUDGE ?? null) : null;
-    const common = unique.some((client) => ['codex', 'grok', 'omp'].includes(client)) ? await readHubCatalog(hub, token) : null;
-    const ompJudge = ompJudgeArg ? resolveOmpJudge(ompJudgeArg, common.models) : null;
-    const codexCatalog = unique.includes('codex') ? await writeCodexCatalog(hub, token, opts.clientVersion) : null;
-    let desktopSnapshot = null;
-    if (unique.includes('claude-desktop')) {
-      desktopSnapshot = await hubJson(hub, '/v1/models?ids=desktop&format=desktop-config', token);
-      if (desktopSnapshot?.version !== 1) die('Hub returned an unsupported Claude Desktop snapshot');
+    const context = requestContext(opts);
+    const { hub, token, ompApi } = context;
+    info(`OCX configuration  |  checking Hub ${hub}`);
+    info(`  Key source   ${context.source} (value hidden)`);
+    if (unique.includes('omp')) validateOmpApi(ompApi);
+    const common = unique.some((client) => ['codex', 'grok', 'omp'].includes(client)) ? await readHubCatalog(context) : null;
+    if (unique.includes('codex') && (!Array.isArray(common.data?.models) || !common.data.models.length)) {
+      die('Hub returned an invalid Codex catalog');
     }
-    if (unique.includes('claude')) {
-      const catalog = await claudeFetchHubCatalog(hub, token);
-      if (catalog.error) die(`Claude catalog: ${catalog.error}`);
+    const claudeCatalog = unique.includes('claude') ? await claudeFetchHubCatalog(context) : null;
+    const desktopSnapshot = unique.includes('claude-desktop')
+      ? await context.request('/v1/models?ids=desktop&format=desktop-config') : null;
+    if (desktopSnapshot && desktopSnapshot.version !== 1) die('Hub returned an unsupported Claude Desktop snapshot');
+    const modelCounts = {};
+    if (common) {
+      if (unique.includes('codex')) modelCounts.codex = common.models.length;
+      if (unique.includes('grok')) modelCounts.grok = common.models.filter((m) => !m.id.startsWith('claude-')).length;
     }
+    if (claudeCatalog) modelCounts.claude = claudeCatalog.cliModels.length;
+    if (desktopSnapshot) modelCounts['claude-desktop'] = desktopSnapshot.models.length;
     const journal = loadJournal();
     activeWrites = new Map();
     try {
       for (const client of unique) {
         activeClient = client;
         if (client === 'claude') {
-          const applied = await claudeSettingsEnvApply(hub, token);
-          logOk(`claude: hub settings applied; ${applied.cache.count} models`);
+          claudeSettingsEnvApply(claudeCatalog);
         } else if (client === 'codex') {
-          stageFile(catalogPathForCodex(), `${JSON.stringify(codexCatalog, null, 2)}\n`);
-          writeCodexHubConfig(hub, codexCatalog);
+          stageFile(catalogPathForCodex(), `${JSON.stringify(common.data, null, 2)}\n`);
+          writeCodexHubConfig(hub);
         } else if (client === 'claude-desktop') {
           writeClaudeDesktopHubProfile(hub, token, desktopSnapshot);
         } else if (client === 'grok') {
@@ -1555,37 +1661,38 @@ async function cmdToggle(opts, enabled) {
         } else if (client === 'omp') {
           const homes = ompHomesForWrite();
           if (!homes.length) die(`Oh My Pi not installed; expected ${ompHome()} or omp on PATH`);
+          const ompModels = ompModelsFromHub(await context.request('/v1/models', { anthropic: false }), common.data);
+          if (!ompModels.length) die('Hub returned no usable models; refusing to write OMP configuration');
+          modelCounts.omp = ompModels.length;
           for (const home of homes) {
             const dir = ompAgentDir(home);
             const modelFile = path.join(dir, 'models.yml');
             const before = fs.existsSync(modelFile) ? fs.readFileSync(modelFile, 'utf8') : '';
-            stageFile(modelFile, upsertYamlMapChild(before, 'providers', OMP_PROVIDER, buildOmpOcxProviderBlock(hub, token, common.models)));
+            stageFile(modelFile, upsertYamlMapChild(before, 'providers', OMP_PROVIDER, buildOmpOcxProviderBlock(hub, token, ompModels, ompApi)));
             const configFile = path.join(dir, 'config.yml');
-            const judge = ompJudge;
-            if (fs.existsSync(configFile) || (judge && !judge.reset)) {
-              const exists = fs.existsSync(configFile);
-              const old = exists ? fs.readFileSync(configFile, 'utf8') : '';
-              // A config.yml created from scratch must still enable the ocx provider.
-              let next = yamlSeqRemoveItem(yamlSeqAddItem(exists ? old : `enabledProviders: [${OMP_PROVIDER}]\n`, 'enabledProviders', OMP_PROVIDER), 'disabledProviders', OMP_PROVIDER);
-              next = applyOmpJudge(next, judge);
+            if (fs.existsSync(configFile)) {
+              const old = fs.readFileSync(configFile, 'utf8');
+              const next = yamlSeqRemoveItem(yamlSeqAddItem(old, 'enabledProviders', OMP_PROVIDER), 'disabledProviders', OMP_PROVIDER);
               if (next !== old) stageFile(configFile, next);
-              if (judge) logOk(`omp: judge ${judge.reset ? 'reset to OMP defaults' : `= ${judge.selector}`} (${configFile})`);
             }
           }
         }
       }
-      for (const [file, change] of activeWrites) {
-        const prior = journal.files[file];
-        const before = prior ? assertJournalCurrent(file, prior) : fileSnapshot(file);
-        change.before = prior ? prior.before : before;
-      }
-      commitWrites(journal);
+      const files = [...activeWrites].map(([file, change]) => ({
+        file, client: change.client,
+        state: !fs.existsSync(file) ? 'created' : sameSnapshot(fileSnapshot(file), change.after) ? 'same' : 'updated',
+      }));
+      await commitWrites(journal);
+      report = { hub, source: context.source, files, modelCounts };
     } finally {
       activeWrites = null;
       activeClient = null;
     }
   });
-  info(`${enabled ? 'applied' : 'restored'} clients: ${unique.join(', ')}`);
+  if (enabled) {
+    printApplyReport(report.hub, report.source, report.files, unique, report.modelCounts);
+    if (unique.includes('codex')) warnCodexLaunchToken();
+  }
 }
 
 
@@ -1644,8 +1751,8 @@ function clientDetail(id) {
 }
 
 function gatherClients(opts) {
-  const connection = connectionFromConfig();
-  const connected = Boolean(connection);
+  const { hub, saved } = resolveConnection(opts);
+  const connected = Boolean(saved.hub);
   const items = [];
   for (const id of NATIVE_CLIENTS) {
     const installed = clientInstalled(id);
@@ -1654,7 +1761,6 @@ function gatherClients(opts) {
     if (installed) {
       const active = managedClientActive(id);
       if (id === 'omp' && connected) {
-        const hub = resolveHub(opts);
         const present = ompHomes().some((home) => ompHubPresent(path.join(ompAgentDir(home), 'models.yml'), hub));
         note = present ? 'desired=on' : 'desired=off';
         kind = present ? 'on' : 'off';
@@ -1665,7 +1771,26 @@ function gatherClients(opts) {
     }
     items.push({ id, installed, note, kind, title: CLIENT_META[id].title, detail: installed ? clientDetail(id) : CLIENT_META[id].blurb });
   }
-  return { items, connection: connected ? 'connected' : 'not configured', hub: resolveHub(opts), catalog: { count: 0, combos: [] } };
+  return { items, connection: connected ? 'connected' : 'not configured', hub, catalog: { count: 0, combos: [] } };
+}
+
+class Screen {
+  constructor(stream) { this.stream = stream; this.lines = 0; }
+
+  clear() {
+    if (!this.lines) return;
+    const s = this.stream;
+    s.write(`\x1b[${this.lines - 1}A`);
+    for (let i = 0; i < this.lines; i++) s.write(`\x1b[2K${i < this.lines - 1 ? '\x1b[1B' : ''}`);
+    s.write('\x1b[1G');
+    this.lines = 0;
+  }
+
+  render(frameLines) {
+    this.clear();
+    this.stream.write(frameLines.join('\n'));
+    this.lines = frameLines.length;
+  }
 }
 
 // Parses keypresses, SGR 1006 mouse events and the \x1b[6n cursor report
@@ -1969,7 +2094,7 @@ function interactiveMenu(gathered, opts) {
 async function runInteractiveMenu(opts) {
   const gathered = gatherClients(opts);
   if (!gathered.items.some((it) => it.installed)) {
-    write('No supported AI agent CLIs (codex, claude, claude-desktop, grok) were detected on this machine.');
+    write('No supported AI clients (codex, claude, claude-desktop, grok, omp) were detected on this machine.');
     cmdStatus(opts);
     return;
   }
@@ -1992,37 +2117,47 @@ async function runInteractiveMenu(opts) {
 function mapClient(client) {
   if (client === 'claude-code' || client === 'claude') return 'claude';
   if (NATIVE_CLIENTS.includes(client)) return client;
-  die(`invalid client: ${client}`);
+  die('Invalid client; choose codex, claude, claude-code, claude-desktop, grok, or omp');
   return null;
 }
 
 async function cmdModels(opts = {}) {
-  const token = readAdmissionToken();
-  if (!token) die('Missing hub admission key: set OCX_API_TOKEN or create a connection key file');
-  const hub = resolveHub(opts);
-  const loaded = await loadOmpCatalog(hub, token);
-  const rows = loaded.models;
+  const { models: rows } = await readHubCatalog(requestContext(opts));
   write(`catalog: ${rows.length} visible (GET /v1/catalog)`);
-  const combos = rows.filter((m) => isComboId(m.id));
+  write('legend: - unknown; [] explicit empty');
+  const combos = rows.filter((m) => m.combo);
   if (combos.length) write(`combos: ${combos.map((m) => m.id).join(', ')}`);
-  const idW = Math.min(52, Math.max(18, ...rows.map((m) => m.id.length)));
+  const list = (values) => values === null ? '-' : values.length ? values.join(',') : '[]';
+  const reasoningCell = (value) => value === true ? 'true' : value === false ? 'false' : '-';
+  const table = [['MODEL', 'CONTEXT', 'OUTPUT', 'INPUT', 'EFFORTS', 'DEFAULT', 'REASONING', 'KIND', 'NAME']];
   for (const m of rows) {
-    const kind = isComboId(m.id) ? 'combo' : (m.id.includes('/') ? 'routed' : 'native');
-    write(`${padVis(m.id, idW)}  ${String(m.context || '-').padStart(8)}  ${kind.padEnd(6)}  ${m.name}`);
+    const kind = m.combo ? 'combo' : (m.id.includes('/') ? 'routed' : 'native');
+    table.push([
+      m.id,
+      String(m.contextWindow ?? '-'),
+      String(m.maxTokens ?? '-'),
+      list(m.input),
+      list(m.reasoningEfforts),
+      m.defaultReasoningEffort ?? '-',
+      reasoningCell(m.reasoning),
+      kind,
+      m.name,
+    ]);
   }
+  const widths = table[0].map((_, index) => Math.max(...table.map((row) => visLen(row[index]))));
+  for (const row of table) write(row.map((value, index) => index === row.length - 1 ? value : padVis(value, widths[index])).join('  '));
 }
 
 function parseArgs(argv) {
   const opts = {
     command: 'status',
-    hub: null,
     client: [],
   };
   let commandSeen = false;
   let i = 0;
   while (i < argv.length) {
     const arg = argv[i];
-    if (!commandSeen && ['status', 'apply', 'restore', 'help', 'models'].includes(arg)) {
+    if (!commandSeen && ['status', 'apply', 'restore', 'help', 'models', 'configure'].includes(arg)) {
       opts.command = arg;
       commandSeen = true;
       i += 1;
@@ -2037,73 +2172,63 @@ function parseArgs(argv) {
       case '--help': case '-h': opts.command = 'help'; break;
       case '--hub': opts.hub = value(); break;
       case '--client': opts.client.push(mapClient(value())); break;
-      case '--omp-judge': opts.ompJudge = value(); break;
+      case '--omp-api': opts.ompApi = value(); break;
+      case '--token-stdin': opts.tokenStdin = true; break;
       default:
-        if (arg.startsWith('-')) die(`unknown option: ${arg}`);
-        else die(`unexpected argument: ${arg}`);
+        die('Unknown option or argument; run help. API keys are accepted only via hidden input, stdin, or environment.');
     }
     i += 1;
   }
+  if (opts.command !== 'configure' && (opts.ompApi !== undefined || opts.tokenStdin)) {
+    die('--omp-api and --token-stdin are configure-only options');
+  }
+  if (opts.command === 'configure' && opts.client.length) die('configure saves connection settings only; use apply --client separately');
   return opts;
 }
 
 function usage() {
-  write(`ocx.mjs — point AI coding clients at an OpenCodex hub
+  write(`Usage:
+  node ocx.mjs             interactive Hub configurator in a TTY; read-only status otherwise
+  node ocx.mjs configure [--hub URL] [--omp-api openai-responses|anthropic-messages] [--token-stdin]
+  node ocx.mjs status [--hub URL] [--client codex|claude-code|claude|claude-desktop|grok|omp]
+  node ocx.mjs models [--hub URL]
+  node ocx.mjs apply --client <id> [--client <id> ...] [--hub URL]
+  node ocx.mjs restore --client <id> [--client <id> ...]
 
-Usage:
-  node ocx.mjs                     interactive client picker in a TTY; read-only status otherwise
-  node ocx.mjs status  [--client <id> ...]   show hub, detected clients and managed state
-  node ocx.mjs models                        list the hub model catalog (GET /v1/catalog)
-  node ocx.mjs apply   --client <id> [--client <id> ...]   write hub settings into client configs
-  node ocx.mjs restore --client <id> [--client <id> ...]   put back the files saved before apply
-  node ocx.mjs help | --help | -h
+configure uses hidden key input in a TTY; redirected keys require --token-stdin.
+Without key input, the saved key is unchanged. Keys are never accepted as arguments.
+OMP defaults to openai-responses; configure without --omp-api preserves the saved choice.
+Use configure --omp-api anthropic-messages to select the Messages API explicitly.
+Codex requires OCX_API_TOKEN in its launch environment (env_key); no OpenCodex binary is needed.
+restore uses the existing byte-and-mode journal, without a key or network access.
+apply shows manual changes against the journal and asks before continuing (CLI and menu).
+Without an interactive terminal, manual changes abort apply; restore remains strict.
+OMP imports base models and reasoning capabilities from /v1/models, enriched by /v1/catalog.
+Claude client aliases and pinned --effort/--fast variants are excluded; judge settings are preserved.
 
-Options:
-  --hub <url>       hub origin, e.g. https://ocx.example.com (HTTP only on loopback)
-  --client <id>     codex | claude (alias claude-code) | claude-desktop | grok | omp
-  --omp-judge <m>   apply --client omp: set OMP modelRoles.judge. Hub id (gpt-6-luna:low → ocx/gpt-6-luna:low),
-                    ocx/<id>, a foreign provider/model (codiv/openjev-latest), or auto to unset.
-                    Without it an existing judge is left untouched.
+Precedence:
+  Hub: --hub > OCX_HUB > saved connection > https://ocx.goldfinches.ru
+  Key: OCX_API_TOKEN > OCX_API_TOKEN_FILE > own state/api-key > ~/.opencodex/service-api-token
+A missing, unreadable, or empty OCX_API_TOKEN_FILE is an error; other key files are not tried.
+Otherwise a readable nonempty ~/.opencodex/service-api-token (or the Windows equivalent) is used
+automatically: current-process home, then the Windows profile home on WSL/Linux; duplicate paths skipped.
+configure saves the entered key only in own state/api-key and does not rewrite the OpenCodex token file.
 
-Hub URL resolution: --hub, then OCX_HUB, then <state>/connection.json {"hub": "..."},
-then ${DEFAULT_HUB}.
-
-Key (data-plane admission token, NOT a provider key) resolution:
-  OCX_API_TOKEN, then the file OCX_API_TOKEN_FILE (default <state>/api-key),
-  then $OPENCODEX_HOME/service-api-token (default ~/.opencodex/service-api-token).
-
-Environment:
-  OCX_HUB                 hub origin
-  OCX_API_TOKEN           data-plane key (prefer a file)
-  OCX_API_TOKEN_FILE      file with the data-plane key
-  OCX_STATE_HOME          state dir: journal, lock, connection.json (default ~/.ocx-export)
-  OCX_LOG_FILE            log file (default ~/.ocx-export/ocx-export.log; secrets redacted)
-  OCX_NONINTERACTIVE=1    never open the interactive picker (CI)
-  OCX_ASSUME_TTY=1        force the interactive picker
-  OCX_OMP_JUDGE           same as --omp-judge
-  OCX_COMBO_PREFIXES      comma-separated id prefixes shown as "combo" (default combo/)
-  NO_COLOR                disable colors
-  Client homes: CODEX_HOME, CLAUDE_CONFIG_DIR, GROK_HOME, OMP_HOME, OPENCODEX_HOME,
-  OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR, CLAUDE_USER_DATA_DIR
-
-Examples:
-  export OCX_HUB=https://ocx.example.com
-  printf '%s' "<key>" > ~/.ocx-export/api-key && chmod 600 ~/.ocx-export/api-key
-  node ocx.mjs models
-  node ocx.mjs apply --client codex --client claude
-  node ocx.mjs restore --client claude
-
-Docs: https://github.com/nordz0r/opencodex-docker/blob/main/docs/ocx-cli.en.md`);
+Env:
+  OCX_STATE_HOME=<path>   own connection, key and journal (default ~/.ocx-export)
+  OCX_LOG_FILE=<path>     process log (default <state>/ocx-export.log)
+  OCX_NONINTERACTIVE=1    force read-only status for bare invocation (CI)`);
 }
 
 async function main() {
-  flog(`=== ocx.mjs argv=[${process.argv.slice(2).join(' ')}] platform=${process.platform}`);
+  flog(`=== ocx.mjs platform=${process.platform}`);
   const noArgs = process.argv.length <= 2;
   const opts = parseArgs(process.argv.slice(2));
   switch (opts.command) {
     case 'help': usage(); return;
+    case 'configure': await cmdConfigure(opts); return;
     case 'status':
-      if (noArgs && isInteractive()) { void runInteractiveMenu(opts); return; }
+      if (noArgs && isInteractive()) { await runInteractiveMenu(opts); return; }
       cmdStatus(opts);
       return;
     case 'models': await cmdModels(opts); return;
@@ -2145,14 +2270,11 @@ if (isMainModule()) {
 
 export {
   upsertYamlMapChild,
-  removeYamlMapChild,
   yamlSeqAddItem,
   yamlSeqRemoveItem,
   buildOmpOcxProviderBlock,
+  ompModelsFromHub,
   ompHubPresent,
-  resolveOmpJudge,
-  applyOmpJudge,
-  ompJudgeFromConfig,
   catalogModelsFromData,
-  loadOmpCatalog,
+  sameSnapshot,
 };

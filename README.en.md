@@ -164,12 +164,12 @@ model_provider = "opencodex"
 name = "OpenCodex Proxy"
 base_url = "http://127.0.0.1:10100/v1"
 wire_api = "responses"
-requires_openai_auth = true
-env_key = "OPENCODEX_API_AUTH_TOKEN"
+requires_openai_auth = false
+env_key = "OCX_API_TOKEN"
 ```
 
 ```bash
-export OPENCODEX_API_AUTH_TOKEN="$(cat /path/to/secrets/ocx_api_token)"
+export OCX_API_TOKEN="$(cat /path/to/secrets/ocx_api_token)"
 codex
 ```
 
@@ -221,13 +221,15 @@ export OCX_API_TOKEN_FILE=~/secrets/ocx_api_token
 node ocx.mjs models                              # list the hub catalog
 node ocx.mjs apply --client codex --client claude
 node ocx.mjs restore --client claude             # undo
-node ocx.mjs apply --client omp --omp-judge gpt-6-luna:low   # omp + judge model (modelRoles.judge)
+node ocx.mjs configure --omp-api anthropic-messages  # optional OMP API
+node ocx.mjs apply --client omp
 ```
 
-For `omp` you can set the `judge` role — the model that answers short evaluation questions
-(auto effort selection, `find` ranking, eval `judge()`). Without `--omp-judge` an existing
-setting is left alone; `--omp-judge auto` restores omp's default chain. Details:
-[docs/ocx-cli.en.md](docs/ocx-cli.en.md#omp-judge-model).
+OMP supports `openai-responses` (default) and `anthropic-messages`.
+Existing model roles, including `modelRoles.judge`, are preserved; configure them in omp itself.
+Without an explicit or saved hub URL, the CLI uses `https://ocx.goldfinches.ru`.
+After `apply --client codex`, launch Codex with the key in `OCX_API_TOKEN`.
+[CLI changes and connection setup](docs/ocx-cli.en.md#omp-api-and-model-roles).
 
 Full guide: [docs/ocx-cli.en.md](docs/ocx-cli.en.md).
 
