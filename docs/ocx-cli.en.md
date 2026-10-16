@@ -109,7 +109,8 @@ itself; `apply` preserves it along with the other model roles.
 | `OCX_NONINTERACTIVE=1` | — | never open the picker (CI, scripts) |
 | `OCX_ASSUME_TTY=1` | — | force the picker |
 | `NO_COLOR` | — | disable colors |
-| `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME`, `OMP_HOME` | `~/.codex`, `~/.claude`, `~/.grok`, `~/.omp` | client homes |
+| `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME` | `~/.codex`, `~/.claude`, `~/.grok` | client homes |
+| `PI_CONFIG_DIR` | `~/.omp` | omp config root; joined under `$HOME` like omp itself does (`PI_CONFIG_DIR=/x` → `$HOME/x/agent`) |
 | `OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR`, `CLAUDE_USER_DATA_DIR` | see table above | Claude Desktop profile location |
 
 ## Examples

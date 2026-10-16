@@ -110,7 +110,8 @@ node ocx.mjs configure --omp-api openai-responses
 | `OCX_NONINTERACTIVE=1` | — | никогда не открывать интерактивный выбор (CI, скрипты) |
 | `OCX_ASSUME_TTY=1` | — | всегда открывать интерактивный выбор |
 | `NO_COLOR` | — | отключить цвета |
-| `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME`, `OMP_HOME` | `~/.codex`, `~/.claude`, `~/.grok`, `~/.omp` | каталоги клиентов |
+| `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME` | `~/.codex`, `~/.claude`, `~/.grok` | каталоги клиентов |
+| `PI_CONFIG_DIR` | `~/.omp` | корень конфига omp; join-ится под `$HOME`, как в самом omp (`PI_CONFIG_DIR=/x` → `$HOME/x/agent`) |
 | `OPENCODEX_CLAUDE_DESKTOP_CONFIG_DIR`, `CLAUDE_USER_DATA_DIR` | см. таблицу выше | где лежат профили Claude Desktop |
 
 ## Примеры
