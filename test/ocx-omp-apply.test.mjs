@@ -30,12 +30,14 @@ after(() => server.close());
 
 function sandbox() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ocx-omp-'));
+  // omp joins PI_CONFIG_DIR under HOME (even absolute values), so the sandbox
+  // passes a RELATIVE dir: HOME=root + PI_CONFIG_DIR=.omp -> root/.omp/agent.
   const ompHome = path.join(root, '.omp');
   fs.mkdirSync(path.join(ompHome, 'agent'), { recursive: true });
   const env = {
     PATH: process.env.PATH, HOME: root, USERPROFILE: root,
     OCX_HUB: hub, OCX_API_TOKEN: 'test-token', OCX_NONINTERACTIVE: '1',
-    OCX_STATE_HOME: path.join(root, '.ocx-export'), OMP_HOME: ompHome,
+    OCX_STATE_HOME: path.join(root, '.ocx-export'), PI_CONFIG_DIR: '.omp',
     GROK_HOME: path.join(root, '.grok'), CODEX_HOME: path.join(root, '.codex'),
     CLAUDE_CONFIG_DIR: path.join(root, '.claude'), OPENCODEX_HOME: path.join(root, '.opencodex'),
   };

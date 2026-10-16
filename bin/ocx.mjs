@@ -125,7 +125,17 @@ const claudeHomes = () => {
   if (!process.env.CLAUDE_CONFIG_DIR) add(windowsClaudeHome());
   return homes.length ? homes : [claudeHome()];
 };
-const ompHome = () => process.env.OMP_HOME || homeDir('.omp');
+// omp (oh-my-pi) ignores OMP_HOME. Its config root env is PI_CONFIG_DIR, joined
+// UNDER the user's home and then suffixed with `agent` (verified against omp
+// 18.11.3: PI_CONFIG_DIR=/x -> $HOME/x/agent, even for absolute /x; empty ->
+// ~/.omp/agent). XDG_CONFIG_HOME is ignored by omp.
+const piConfigDir = () => String(process.env.PI_CONFIG_DIR || '').trim();
+const ompHome = () => {
+  const dir = piConfigDir();
+  if (!dir) return homeDir('.omp');
+  const base = os.homedir();
+  return path.isAbsolute(dir) ? path.normalize(path.join(base, dir)) : path.resolve(base, dir);
+};
 const windowsOmpHome = () => {
   const winHome = windowsUserHome();
   return winHome ? path.join(winHome, '.omp') : null;
@@ -142,7 +152,7 @@ const collectHomes = (...candidates) => {
   }
   return homes;
 };
-const ompHomes = () => collectHomes(ompHome(), process.env.OMP_HOME ? null : windowsOmpHome());
+const ompHomes = () => collectHomes(ompHome(), piConfigDir() ? null : windowsOmpHome());
 const ompHomesForWrite = () => {
   const homes = ompHomes();
   if (homes.length) return homes;
