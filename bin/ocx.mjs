@@ -193,6 +193,7 @@ const ui = {
   dim: wrap('\x1b[2m', '\x1b[22m'),
   bold: wrap('\x1b[1m', '\x1b[22m'),
   cyan: wrap('\x1b[36m', '\x1b[39m'),
+  red: wrap('\x1b[31m', '\x1b[39m'),
   green: wrap('\x1b[32m', '\x1b[39m'),
   yellow: wrap('\x1b[33m', '\x1b[39m'),
   magenta: wrap('\x1b[35m', '\x1b[39m'),
@@ -367,12 +368,11 @@ function assertJournalCurrent(file, entry) {
 
 const snapshotText = (snapshot) => (snapshot ? Buffer.from(snapshot.data, 'base64').toString('utf8') : '');
 
-// Line diff of the manual edits apply is about to overwrite. Bounded so a fully
-// rewritten file cannot flood the terminal; falls back to a prefix/suffix diff
-// when the LCS table would be too large.
+// Current-to-proposed line diff, bounded to keep large catalogs readable.
+// Falls back to a prefix/suffix diff when the LCS table would be too large.
 function compactDiff(beforeText, afterText, limit = 60) {
-  const a = String(beforeText).split('\n');
-  const b = String(afterText).split('\n');
+  const a = beforeText ? String(beforeText).split('\n') : [];
+  const b = afterText ? String(afterText).split('\n') : [];
   const out = [];
   if (a.length * b.length > 4_000_000) {
     let head = 0;
@@ -402,7 +402,11 @@ function compactDiff(beforeText, afterText, limit = 60) {
     for (; j < b.length; j += 1) out.push(`+ ${b[j]}`);
   }
   const changed = out.length;
-  return { lines: changed > limit ? [...out.slice(0, limit), `… ${changed - limit} more changed line(s)`] : out, changed };
+  return {
+    lines: changed > limit ? [...out.slice(0, limit), `… ${changed - limit} more changed line(s)`] : out,
+    added: out.filter((line) => line.startsWith('+ ')).length,
+    removed: out.filter((line) => line.startsWith('- ')).length,
+  };
 }
 
 // Interactive yes/no. Returns null when no terminal is available — piped input,
@@ -425,16 +429,59 @@ function promptContinue(question) {
   });
 }
 
-async function confirmOverwrite(conflicts, current) {
-  write(`manual changes detected in ${conflicts.length} managed file(s):`);
-  for (const conflict of conflicts) {
-    const { lines, changed } = compactDiff(snapshotText(conflict.written), snapshotText(conflict.snapshot));
-    write('');
-    write(`  ${conflict.file}  (${changed} changed line(s))`);
-    for (const line of lines) write(`    ${redact(line).replace(/(apiKey\s*[:=]\s*).*/i, '$1[redacted]')}`);
+function previewText(snapshot) {
+  let secretIndent = null;
+  return snapshotText(snapshot).split('\n').map((line) => {
+    const indent = line.match(/^\s*/)[0].length;
+    if (secretIndent !== null && line.trim() && indent <= secretIndent) secretIndent = null;
+    if (secretIndent !== null) return `${' '.repeat(indent)}[redacted]`;
+    const masked = line.replace(/(["']?[\w.-]*(?:api[-_]?key|token|secret|password|authorization)[\w.-]*["']?\s*[:=]\s*).*/i, '$1[redacted]');
+    if (masked !== line) secretIndent = indent;
+    return redact(masked).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
+  }).join('\n');
+}
+
+function printChangePreview(changes) {
+  const width = termWidth();
+  const fileWidth = width - 38;
+  const fit = (value, size, keepEnd = true) => {
+    const chars = [...String(value).replace(/[\x00-\x1f\x7f-\x9f]/g, '')];
+    if (chars.length <= size) return chars.join('');
+    return keepEnd ? `…${chars.slice(-(size - 1)).join('')}` : `${chars.slice(0, size - 1).join('')}…`;
+  };
+  const row = (file, action, lines, note) => boxRow(width,
+    ` ${padVis(file, fileWidth)}  ${padVis(action, 8)}  ${padVis(lines, 11)}  ${padVis(note, 7)} `);
+  write('');
+  write(boxTop(width, 'Apply preview'));
+  write(row(ui.bold('File'), ui.bold('Action'), ui.bold('+ / - lines'), ui.bold('Review')));
+  for (const change of changes) {
+    const { file, snapshot, after, manual } = change;
+    const diff = compactDiff(previewText(snapshot), previewText(after), 16);
+    change.diff = diff;
+    const same = sameSnapshot(snapshot, after);
+    const action = same ? ui.dim('KEEP') : after === null ? ui.red('DELETE') : snapshot === null ? ui.green('ADD') : ui.yellow('UPDATE');
+    const shortFile = file.startsWith(`${os.homedir()}${path.sep}`) ? `~${file.slice(os.homedir().length)}` : file;
+    write(row(fit(shortFile, fileWidth), action, `+${diff.added} / -${diff.removed}`, manual ? ui.yellow('manual') : ui.dim('—')));
+  }
+  write(boxBottom(width));
+  for (const { file, snapshot, after, diff } of changes) {
+    if (sameSnapshot(snapshot, after)) continue;
+    write(`\n  ${ui.bold(fit(file, width - 4))}  ${ui.dim('current → proposed')}`);
+    for (const line of diff.lines) {
+      const color = line.startsWith('+ ') ? ui.green : line.startsWith('- ') ? ui.red : ui.dim;
+      write(`    ${color(fit(line, width - 4, false))}`);
+    }
+    if (!diff.lines.length) write(ui.dim('    Content unchanged after masking; secret values or permissions differ.'));
+    if (snapshot && after && snapshot.mode !== after.mode) {
+      write(ui.dim(`    permissions: ${snapshot.mode.toString(8)} → ${after.mode.toString(8)}`));
+    }
   }
   write('');
-  const answer = await promptContinue('Overwrite these files and continue? [y/N] ');
+}
+
+async function confirmOverwrite(conflicts, current) {
+  write(ui.yellow(`  ! ${conflicts.length} file(s) contain manual edits; review the proposed result above.`));
+  const answer = await promptContinue('Apply the changes shown above? [y/N] ');
   if (answer === null) {
     die(`Manual changes present and no interactive confirmation available; refusing to overwrite: ${conflicts.map((c) => c.file).join(', ')}`);
   }
@@ -458,15 +505,19 @@ async function commitWrites(journal) {
   const original = structuredClone(journal);
   const current = new Map();
   const conflicts = [];
+  const preview = [];
   for (const [file, change] of activeWrites) {
     const entry = journal.files[file];
     if (entry && entry.client !== change.client) die(`File belongs to another client: ${file}`);
     const snapshot = fileSnapshot(file);
     // Manual edits are shown and confirmed before anything is written; a declined
     // prompt leaves the journal untouched, so the next run re-offers the same diff.
-    if (entry && journalDrift(snapshot, entry)) conflicts.push({ file, snapshot, written: entry.after });
+    const manual = Boolean(entry && journalDrift(snapshot, entry));
+    preview.push({ file, snapshot, after: change.after, manual });
+    if (manual) conflicts.push({ file, snapshot });
     else current.set(file, snapshot);
   }
+  printChangePreview(preview);
   if (conflicts.length) await confirmOverwrite(conflicts, current);
   for (const [file, change] of activeWrites) {
     const entry = journal.files[file];
@@ -975,8 +1026,6 @@ function ompModelsFromHub(modelsData, catalogData) {
     const catalogRow = catalogByKey.get(ompModelKey(id));
     const effortRows = Array.isArray(row.reasoning_efforts) ? row.reasoning_efforts : [];
     const efforts = ompEffortList(effortRows.map((entry) => entry?.value));
-    const flagged = effortRows.find((entry) => entry?.default === true)?.value;
-    const preferred = typeof flagged === 'string' ? flagged : (typeof row.reasoning_effort === 'string' ? row.reasoning_effort : '');
     byKey.set(ompModelKey(id), {
       id: typeof catalogRow?.slug === 'string' && catalogRow.slug ? catalogRow.slug : id,
       name: ompDisplayName(catalogRow, id),
@@ -985,7 +1034,6 @@ function ompModelsFromHub(modelsData, catalogData) {
       input: catalogInputModalities(caps),
       reasoning: typeof caps.supports_reasoning === 'boolean' ? caps.supports_reasoning : null,
       reasoningEfforts: efforts,
-      defaultReasoningEffort: efforts.includes(preferred) ? preferred : (efforts[0] ?? null),
     });
   }
   for (const row of catalogRows) {
@@ -993,7 +1041,6 @@ function ompModelsFromHub(modelsData, catalogData) {
     if (!slug || OMP_EXCLUDED_PREFIX.some((prefix) => slug.startsWith(prefix)) || byKey.has(ompModelKey(slug))) continue;
     const { efforts } = catalogReasoningEfforts(row.supported_reasoning_levels);
     const list = ompEffortList(efforts);
-    const preferred = typeof row.default_reasoning_level === 'string' ? row.default_reasoning_level : '';
     byKey.set(ompModelKey(slug), {
       id: slug,
       name: ompDisplayName(row, slug),
@@ -1002,7 +1049,6 @@ function ompModelsFromHub(modelsData, catalogData) {
       input: catalogInputModalities(row),
       reasoning: list.length ? true : null,
       reasoningEfforts: list,
-      defaultReasoningEffort: list.includes(preferred) ? preferred : (list[0] ?? null),
     });
   }
   return [...byKey.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -1375,11 +1421,9 @@ function buildOmpOcxProviderBlock(hub, token, models, api) {
     if (model.contextWindow !== null && model.contextWindow !== undefined) lines.push(`        contextWindow: ${model.contextWindow}`);
     if (model.maxTokens !== null && model.maxTokens !== undefined) lines.push(`        maxTokens: ${model.maxTokens}`);
     if (efforts.length) {
-      const def = efforts.includes(model.defaultReasoningEffort) ? model.defaultReasoningEffort : null;
       lines.push('        thinking:');
       lines.push('          mode: effort');
       lines.push(`          efforts: [${efforts.join(', ')}]`);
-      if (def) lines.push(`          defaultLevel: ${def}`);
     }
   }
   return `${lines.join('\n')}\n`;
@@ -2211,7 +2255,9 @@ OMP defaults to openai-responses; configure without --omp-api preserves the save
 Use configure --omp-api anthropic-messages to select the Messages API explicitly.
 Codex requires OCX_API_TOKEN in its launch environment (env_key); no OpenCodex binary is needed.
 restore uses the existing byte-and-mode journal, without a key or network access.
-apply shows manual changes against the journal and asks before continuing (CLI and menu).
+apply previews current → proposed changes in a file table with a bounded, secret-masked diff.
+TTY output uses color (NO_COLOR disables it); + adds lines and - removes current lines.
+Manual edits are flagged separately and require confirmation before any write (CLI and menu).
 Without an interactive terminal, manual changes abort apply; restore remains strict.
 OMP imports base models and reasoning capabilities from /v1/models, enriched by /v1/catalog.
 Claude client aliases and pinned --effort/--fast variants are excluded; judge settings are preserved.
