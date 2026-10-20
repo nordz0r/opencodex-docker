@@ -85,20 +85,62 @@ test('configure saves the OMP API without touching clients and preserves it on h
   assert.match(fs.readFileSync(models, 'utf8'), /api: anthropic-messages/);
 });
 
-test('noninteractive apply and restore refuse manual drift without losing user edits', async () => {
+test('noninteractive apply previews but refuses manual drift without writes; restore remains strict', async () => {
   const { config, models, run } = sandbox();
-  fs.writeFileSync(config, 'enabledProviders: [other]\n');
+  fs.writeFileSync(config, 'enabledProviders: [other]\nmanualSetting: keep\n');
   const applied = await run(['apply', '--client', 'omp']);
   assert.equal(applied.status, 0, applied.stderr);
   const originalConfig = fs.readFileSync(config, 'utf8');
   const edited = fs.readFileSync(models, 'utf8') + '# manual change\n';
   fs.writeFileSync(models, edited);
-  for (const command of ['apply', 'restore']) {
-    const result = await run([command, '--client', 'omp']);
-    assert.notEqual(result.status, 0);
-    assert.equal(fs.readFileSync(config, 'utf8'), originalConfig);
-    assert.equal(fs.readFileSync(models, 'utf8'), edited);
+  const refused = await run(['apply', '--client', 'omp']);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stdout, /Apply preview/);
+  assert.match(refused.stderr, /no interactive confirmation available/);
+  assert.equal(fs.readFileSync(config, 'utf8'), originalConfig);
+  assert.equal(fs.readFileSync(models, 'utf8'), edited);
+  const restored = await run(['restore', '--client', 'omp']);
+  assert.notEqual(restored.status, 0);
+  assert.equal(fs.readFileSync(config, 'utf8'), originalConfig);
+  assert.equal(fs.readFileSync(models, 'utf8'), edited);
+});
+
+test('apply -y and --yes accept manual OMP drift after preview', async () => {
+  for (const yes of ['-y', '--yes']) {
+    const { config, models, run } = sandbox();
+    fs.writeFileSync(config, 'enabledProviders: [other]\nmanualSetting: keep\n');
+    const applied = await run(['apply', '--client', 'omp']);
+    assert.equal(applied.status, 0, applied.stderr);
+    fs.writeFileSync(models, fs.readFileSync(models, 'utf8') + '# manual change\n');
+    fs.appendFileSync(config, 'modelRoles:\n  judge: codiv/openjev-latest\n');
+    const accepted = await run(['apply', '--client', 'omp', yes]);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.match(accepted.stdout, /Apply preview/);
+    assert.match(fs.readFileSync(config, 'utf8'), /manualSetting: keep/);
+    assert.match(fs.readFileSync(config, 'utf8'), /judge: codiv\/openjev-latest/);
+    assert.doesNotMatch(fs.readFileSync(models, 'utf8'), /# manual change/);
+    const repeated = await run(['apply', '--client', 'omp']);
+    assert.equal(repeated.status, 0, repeated.stderr);
   }
+});
+
+test('restore rejects -y/--yes as apply-only', async () => {
+  const { config, run } = sandbox();
+  fs.writeFileSync(config, 'enabledProviders: [other]\n');
+  const applied = await run(['apply', '--client', 'omp']);
+  assert.equal(applied.status, 0, applied.stderr);
+  for (const yes of ['-y', '--yes']) {
+    const result = await run(['restore', '--client', 'omp', yes]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /-y\/--yes is apply-only/);
+  }
+});
+
+test('unknown options are rejected', async () => {
+  const { run } = sandbox();
+  const result = await run(['apply', '--client', 'omp', '--yes', '--unknown']);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Unknown option or argument/);
 });
 
 test('unreadable explicit key never falls back to a saved key', async () => {

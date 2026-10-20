@@ -479,9 +479,9 @@ function printChangePreview(changes) {
   write('');
 }
 
-async function confirmOverwrite(conflicts, current) {
+async function confirmOverwrite(conflicts, current, yes = false) {
   write(ui.yellow(`  ! ${conflicts.length} file(s) contain manual edits; review the proposed result above.`));
-  const answer = await promptContinue('Apply the changes shown above? [y/N] ');
+  const answer = yes || await promptContinue('Apply the changes shown above? [y/N] ');
   if (answer === null) {
     die(`Manual changes present and no interactive confirmation available; refusing to overwrite: ${conflicts.map((c) => c.file).join(', ')}`);
   }
@@ -501,7 +501,7 @@ async function withStateLock(action) {
   finally { fs.rmdirSync(lock); }
 }
 
-async function commitWrites(journal) {
+async function commitWrites(journal, yes = false) {
   const original = structuredClone(journal);
   const current = new Map();
   const conflicts = [];
@@ -518,7 +518,7 @@ async function commitWrites(journal) {
     else current.set(file, snapshot);
   }
   printChangePreview(preview);
-  if (conflicts.length) await confirmOverwrite(conflicts, current);
+  if (conflicts.length) await confirmOverwrite(conflicts, current, yes);
   for (const [file, change] of activeWrites) {
     const entry = journal.files[file];
     const before = current.get(file);
@@ -1736,7 +1736,7 @@ async function cmdToggle(opts, enabled) {
         file, client: change.client,
         state: !fs.existsSync(file) ? 'created' : sameSnapshot(fileSnapshot(file), change.after) ? 'same' : 'updated',
       }));
-      await commitWrites(journal);
+      await commitWrites(journal, opts.yes === true);
       report = { hub, source: context.source, files, modelCounts };
     } finally {
       activeWrites = null;
@@ -2206,6 +2206,7 @@ function parseArgs(argv) {
   const opts = {
     command: 'status',
     client: [],
+    yes: false,
   };
   let commandSeen = false;
   let i = 0;
@@ -2228,11 +2229,13 @@ function parseArgs(argv) {
       case '--client': opts.client.push(mapClient(value())); break;
       case '--omp-api': opts.ompApi = value(); break;
       case '--token-stdin': opts.tokenStdin = true; break;
+      case '-y': case '--yes': opts.yes = true; break;
       default:
         die('Unknown option or argument; run help. API keys are accepted only via hidden input, stdin, or environment.');
     }
     i += 1;
   }
+  if (opts.yes && opts.command !== 'apply') die('-y/--yes is apply-only');
   if (opts.command !== 'configure' && (opts.ompApi !== undefined || opts.tokenStdin)) {
     die('--omp-api and --token-stdin are configure-only options');
   }
@@ -2246,7 +2249,7 @@ function usage() {
   node ocx.mjs configure [--hub URL] [--omp-api openai-responses|anthropic-messages] [--token-stdin]
   node ocx.mjs status [--hub URL] [--client codex|claude-code|claude|claude-desktop|grok|omp]
   node ocx.mjs models [--hub URL]
-  node ocx.mjs apply --client <id> [--client <id> ...] [--hub URL]
+  node ocx.mjs apply --client <id> [--client <id> ...] [--hub URL] [-y|--yes]
   node ocx.mjs restore --client <id> [--client <id> ...]
 
 configure uses hidden key input in a TTY; redirected keys require --token-stdin.
@@ -2258,7 +2261,8 @@ restore uses the existing byte-and-mode journal, without a key or network access
 apply previews current → proposed changes in a file table with a bounded, secret-masked diff.
 TTY output uses color (NO_COLOR disables it); + adds lines and - removes current lines.
 Manual edits are flagged separately and require confirmation before any write (CLI and menu).
-Without an interactive terminal, manual changes abort apply; restore remains strict.
+Use apply -y/--yes to skip only this confirmation; the preview is still printed.
+Without an interactive terminal, manual changes abort apply unless -y/--yes is passed; restore remains strict.
 OMP imports base models and reasoning capabilities from /v1/models, enriched by /v1/catalog.
 Claude client aliases and pinned --effort/--fast variants are excluded; judge settings are preserved.
 

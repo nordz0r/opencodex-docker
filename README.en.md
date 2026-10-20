@@ -225,6 +225,9 @@ node ocx.mjs configure --omp-api anthropic-messages  # optional OMP API
 node ocx.mjs apply --client omp
 ```
 
+For scripts: `node ocx.mjs apply --client omp -y` (or `--yes`) accepts manual changes
+without a TTY. The preview and safety checks remain; the flag is not accepted by `restore`.
+
 OMP supports `openai-responses` (default) and `anthropic-messages`.
 Existing model roles, including `modelRoles.judge`, are preserved; configure them in omp itself.
 Without an explicit or saved hub URL, the CLI uses `https://ocx.goldfinches.ru`.
