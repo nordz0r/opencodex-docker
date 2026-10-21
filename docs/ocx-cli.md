@@ -53,7 +53,7 @@ export OCX_HUB=http://127.0.0.1:10100
 | `node ocx.mjs status [--client <id> ...]` | Только чтение: адрес хаба, какие клиенты установлены, какими управляет ocx, какие файлы есть. |
 | `node ocx.mjs configure [--hub <url>] [--omp-api <api>] [--token-stdin]` | Сохраняет подключение и API OMP; вводит ключ скрыто в TTY либо читает stdin с явным флагом. |
 | `node ocx.mjs models` | Каталог хаба (`GET /v1/catalog`): id, контекстное окно, тип (native / routed / combo), название. |
-| `node ocx.mjs apply --client <id> [...]` | Скачивает каталог и прописывает настройки хаба в выбранные клиенты. |
+| `node ocx.mjs apply --client <id> [...] [-y]` | Скачивает каталог и прописывает настройки хаба в выбранные клиенты. `-y` / `--yes` подтверждает перезапись ручных изменений без TTY; preview остаётся. |
 | `node ocx.mjs restore --client <id> [...]` | Возвращает файлы, сохранённые перед первым `apply` для этих клиентов. |
 | `node ocx.mjs help` / `--help` / `-h` | Справка. |
 
@@ -77,7 +77,8 @@ ID клиентов: `codex`, `claude` (синоним `claude-code`), `claude-d
 - Перед записью оригинал каждого файла сохраняется в журнал `~/.ocx-export/integrations.json`.
 - `restore` не перезапишет файл, который вы правили после `apply` («File changed since apply»).
 - `apply` показывает ручные изменения относительно журнала и запрашивает подтверждение в TTY;
-  без интерактивного терминала отказывается перезаписывать их.
+  без интерактивного терминала отказывается перезаписывать их, если не указан `-y` / `--yes`.
+  Флаг действует только для `apply`: не отключает проверки каталога, блокировку, журнал или защиту `restore`.
 - На время работы занимается каталог-блокировка `~/.ocx-export/mutation.lock`; второй запуск
   завершится ошибкой, а не будет мешать первому.
 - Пустой или некорректный каталог хаба прерывает запуск до любых записей.
@@ -128,6 +129,9 @@ codex
 # Модели на хабе поменялись — просто выполните apply ещё раз
 node ocx.mjs apply --client claude
 
+# Скрипт / CI: явно подтвердить показанные изменения без TTY
+node ocx.mjs apply --client omp --yes
+
 # Откат
 node ocx.mjs restore --client codex --client claude
 
@@ -144,7 +148,7 @@ OCX_HUB=http://127.0.0.1:10100 OCX_API_TOKEN_FILE=./secrets/ocx_api_token node b
 | `Hub /v1/catalog: HTTP 401/403` | Неверный ключ или хаб за фронтендом с привязкой к loopback (см. основной README). |
 | `Hub catalog is empty` | На хабе ещё не настроены провайдеры. |
 | `Another mutation or interrupted run holds …/mutation.lock` | Убедитесь, что другой запуск ocx не идёт, и удалите каталог. |
-| `File changed since apply; refusing to overwrite` | `restore` защищает ручные изменения. Для повторного `apply` просмотрите и подтвердите их в TTY; без TTY запуск прервётся. |
+| `File changed since apply; refusing to overwrite` | `restore` защищает ручные изменения. Для повторного `apply` подтвердите их в TTY либо явно укажите `-y` / `--yes`; защита `restore` не отключается. |
 | `Claude Desktop currently selects a foreign profile` | Сначала выберите в Claude Desktop профиль `opencodex` (или никакой). |
 
 Подписи интерактивного меню пока на русском; неинтерактивные команды выводят текст на английском.

@@ -53,7 +53,7 @@ A missing, unreadable or empty explicit key file aborts without falling back to 
 | `node ocx.mjs status [--client <id> ...]` | Read-only: hub URL, which clients are installed, which are managed by ocx, which files exist. |
 | `node ocx.mjs configure [--hub <url>] [--omp-api <api>] [--token-stdin]` | Saves connection and OMP API; hidden key input in a TTY, explicit stdin input otherwise. |
 | `node ocx.mjs models` | Lists the hub catalog (`GET /v1/catalog`): id, context window, kind (native / routed / combo), name. |
-| `node ocx.mjs apply --client <id> [...]` | Fetches the catalog and writes hub settings into the chosen clients. |
+| `node ocx.mjs apply --client <id> [...] [-y]` | Fetches the catalog and writes hub settings into the chosen clients. `-y` / `--yes` confirms overwriting manual edits without a TTY; the preview is still printed. |
 | `node ocx.mjs restore --client <id> [...]` | Restores the files saved before the first `apply` for those clients. |
 | `node ocx.mjs help` / `--help` / `-h` | Usage. |
 
@@ -75,9 +75,10 @@ Safety rules:
 - The key is stored in plaintext in the Claude, Claude Desktop, Grok and Oh My Pi configs. All
   files are written with mode `0600`, atomically.
 - Before writing, the original of each file is saved in the journal `~/.ocx-export/integrations.json`.
-- `restore` refuses to overwrite a file you edited after `apply` ("File changed since apply").
+- `restore` refuses to overwrite a file edited after `apply` ("File changed since apply").
 - `apply` shows manual changes against the journal and asks for confirmation in a TTY;
-  without an interactive terminal, it refuses to overwrite them.
+  without an interactive terminal, it refuses to overwrite them unless `apply -y`/`--yes`
+  is passed. `-y`/`--yes` bypasses only this confirmation and does not bypass restore safeguards.
 - A run holds the lock directory `~/.ocx-export/mutation.lock`; a second run fails instead of racing.
 - An empty or invalid hub catalog aborts the run before anything is written.
 - The log `~/.ocx-export/ocx-export.log` redacts tokens and keys.
@@ -127,6 +128,9 @@ codex
 # Refresh after models changed on the hub: just apply again
 node ocx.mjs apply --client claude
 
+# Script / CI: explicitly accept the previewed changes without a TTY
+node ocx.mjs apply --client omp --yes
+
 # Undo
 node ocx.mjs restore --client codex --client claude
 
@@ -143,7 +147,7 @@ OCX_HUB=http://127.0.0.1:10100 OCX_API_TOKEN_FILE=./secrets/ocx_api_token node b
 | `Hub /v1/catalog: HTTP 401/403` | Wrong key, or hub behind a frontend with loopback bind (see main README). |
 | `Hub catalog is empty` | No providers configured on the hub yet. |
 | `Another mutation or interrupted run holds …/mutation.lock` | Make sure no other ocx run is active, then remove the directory. |
-| `File changed since apply; refusing to overwrite` | `restore` protects manual edits. Review and confirm them for a repeated `apply` in a TTY; without a TTY, apply aborts. |
+| `File changed since apply; refusing to overwrite` | `restore` protects manual edits. For a repeated `apply`, use `-y`/`--yes` in a noninteractive context, or review and confirm the changes in a TTY; restore remains strict. |
 | `Claude Desktop currently selects a foreign profile` | Select the `opencodex` profile (or none) in Claude Desktop first. |
 
 The interactive picker's labels are currently in Russian; all non-interactive commands print English.
