@@ -88,10 +88,18 @@ RUN apt-get update \
 #      is reachable by the non-root `bun` user. Dist-tag `latest` still points at the
 #      retired 0.1.4 line, so the version is resolved at build time to the newest
 #      published 1.x release (the active stable channel) — no hardcoded version.
-#   4. omp (oh-my-pi): @oh-my-pi/pi-coding-agent — bin is `omp` (dist/cli.js).
-#      Official install is `bun install -g`; npm -g matches the other CLIs here.
+#   4. omp (oh-my-pi): @oh-my-pi/pi-coding-agent — installed from scripts/omp/package.json
+#      into /opt/omp (not -g). Its chromium-bidi still declares zod ^3 (CVE-2023-54404,
+#      fixed in zod 4.6.6); the root override forces one top-level zod 4.6.6. Drop the
+#      override once upstream puppeteer-core/chromium-bidi move to zod 4.
+COPY --chown=root:root scripts/omp/package.json /opt/omp/package.json
+RUN cd /opt/omp \
+    && npm install --no-audit --no-fund \
+    && ln -sf /opt/omp/node_modules/.bin/omp /usr/local/bin/omp \
+    && rm -rf /root/.npm
+
+# Global CLIs (codex, claude, grok) keep their npm -g install.
 RUN npm install -g @openai/codex@latest @anthropic-ai/claude-code@latest \
-        @oh-my-pi/pi-coding-agent@latest \
     && GROK_VERSION="$(npm view '@xai-official/grok@>=1.0.0 <2.0.0' version --json | grep -oE '\"[0-9]+\.[0-9]+\.[0-9]+\"' | tail -1 | tr -d '\"')" \
     && GROK_HOME=/home/bun/.grok npm install -g "@xai-official/grok@${GROK_VERSION}" \
     && rm -rf /root/.npm /home/bun/.npm \
