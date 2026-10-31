@@ -49,17 +49,27 @@ wait_healthz() {
   return 1
 }
 
+wait_readyz() {
+  for _ in $(seq 1 30); do
+    code="$(curl -sS -o /dev/null -w '%{http_code}' "${base}/readyz" 2>/dev/null || echo 000)"
+    if [ "${code}" = "200" ]; then return 0; fi
+    sleep 1
+  done
+  return 1
+}
+
 echo "[smoke] waiting for /healthz on ${base}"
 wait_healthz || { echo "[smoke] FATAL: /healthz never became ready" >&2; docker logs "${CTR}" >&2 || true; exit 1; }
 echo "[smoke] PASS /healthz"
 
-echo "[smoke] checking /readyz"
-code="$(curl -sS -o /dev/null -w '%{http_code}' "${base}/readyz")"
-if [ "${code}" != "200" ]; then
-  echo "[smoke] FATAL: /readyz returned ${code} (expected 200)" >&2
+echo "[smoke] waiting for /readyz on ${base}"
+wait_readyz || {
+  code="$(curl -sS -o /dev/null -w '%{http_code}' "${base}/readyz" 2>/dev/null || echo 000)"
+  echo "[smoke] FATAL: /readyz returned ${code} after wait (expected 200)" >&2
+  curl -sS "${base}/readyz" >&2 || true
   docker logs "${CTR}" >&2 || true
   exit 1
-fi
+}
 echo "[smoke] PASS /readyz"
 
 echo "[smoke] checking negative auth: /v1/catalog without credentials must be rejected"
