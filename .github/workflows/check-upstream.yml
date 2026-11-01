@@ -36,6 +36,10 @@ jobs:
       commit: ${{ steps.resolve.outputs.commit }}
       already_published: ${{ steps.check.outputs.already }}
     steps:
+      - name: Checkout packaging repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Resolve target version and immutable commit
         id: resolve
         run: |
@@ -70,6 +74,14 @@ jobs:
             echo "commit=${sha}"
           } >> "$GITHUB_OUTPUT"
           echo "target: v${version} @ ${sha}"
+      - name: Report vendored skill drift (non-blocking)
+        continue-on-error: true
+        env:
+          OCX_UPSTREAM_SKILL_REVISION: ${{ steps.resolve.outputs.commit }}
+        run: |
+          if ! bash scripts/sync-ocx-skill.sh --check; then
+            echo "::warning::Vendored OCX skill is out of sync; see the independent skill-sync workflow."
+          fi
 
       - name: Skip if exact version already in GHCR
         id: check

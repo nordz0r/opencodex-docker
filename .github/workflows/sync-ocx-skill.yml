@@ -1,0 +1,56 @@
+name: sync-ocx-skill
+
+on:
+  schedule:
+    - cron: '17 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ocx-skill-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  propose-upstream-update:
+    name: Propose safe upstream skill update
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+      - name: Sync against upstream main without overwriting local edits
+        run: bash scripts/sync-ocx-skill.sh
+      - name: Open or update pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: automation/sync-ocx-skill-upstream
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain -- skills/ocx)" ]; then
+            echo "The vendored skill already matches upstream."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add -- skills/ocx
+          git commit -m "chore: sync OCX skill from upstream"
+          expected=""
+          if git fetch --quiet origin "refs/heads/$BRANCH"; then
+            expected="$(git rev-parse FETCH_HEAD)"
+            git push --force-with-lease="refs/heads/$BRANCH:$expected" origin "HEAD:refs/heads/$BRANCH"
+          else
+            git push origin "HEAD:refs/heads/$BRANCH"
+          fi
+          pr_number="$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].number // empty')"
+          if [ -n "$pr_number" ]; then
+            gh pr edit "$pr_number" --title "chore: sync OCX skill from upstream" \
+              --body "Automated upstream skill update. Review the skill diff and confirm the MIT license notice before merging. The sync script refuses local conflicts instead of overwriting local changes."
+          else
+            gh pr create --base main --head "$BRANCH" \
+              --title "chore: sync OCX skill from upstream" \
+              --body "Automated upstream skill update. Review the skill diff and confirm the MIT license notice before merging. The sync script refuses local conflicts instead of overwriting local changes."
+          fi

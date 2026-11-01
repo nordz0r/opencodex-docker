@@ -8,9 +8,20 @@ on:
     paths:
       - 'Dockerfile'
       - 'scripts/**'
+      - 'skills/**'
       - '.github/workflows/**'
 
 jobs:
+  skill-sync:
+    name: Report vendored skill drift (non-blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check vendored skill
+        continue-on-error: true
+        run: bash scripts/sync-ocx-skill.sh --check
   test-build:
     name: Build & smoke (no publish)
     uses: ./.github/workflows/build.yml

@@ -1,0 +1,369 @@
+# Failure semantics
+
+What each exit code means, which failures are worth retrying, and which mean stop.
+
+## Exit codes
+
+`runCliAction` maps many management failures; the whole CLI does not share one
+exit contract. Its common mappings and the main exceptions are:
+
+| Code | Cause | Retry? |
+|---|---|---|
+| 0 | success | — |
+| 2 | locally rejected usage in management handlers; also unsupported `doctor --json` | fix arguments |
+| 64 | usage validation in `capabilities`, `ready`, `resolve` | fix arguments; no discovery/request for invalid input |
+| 4 | HTTP 404 — the named account, provider, key, or route does not exist | no |
+| 5 | HTTP 409 — conflict; a lock is held or state moved under you | inspect first; stale baselines require review |
+| 1 | everything else: transport failure, 5xx, unexpected errors | depends on `reason` |
+
+Two consequences worth internalizing:
+
+**Exit 0 means no error was reported, not that a mutation happened.** Preview verbs
+(`storage cleanup` without `--yes`) exit 0 after a read-only preview. Parse `--json` (or the
+human summary) to see whether anything was written. Read saved/applied/skipped
+fields and warnings as well; a successful save can leave live convergence pending.
+
+**A local usage refusal is not a transport failure.** Fix the arguments rather than
+retrying unchanged. Unknown root commands and unavailable explicit help topics use
+exit 1; a capability route miss uses 4 even when an undeclared handler exists.
+
+## Distinguishing "not running" from "failing"
+
+```bash
+ocx ready --json
+```
+
+Use readiness before live management. `pending` permits a bounded wait; `failed`
+and `unreachable` need diagnosis. Offline help, local config and local Lab reads
+still work without a proxy: do not start one just to perform those tasks. A ready
+proxy can still refuse a route, serve an older version, or be the wrong role.
+Check `status --json` and its `versionSkew` and target information.
+
+A transport failure exits 1 and names the underlying cause (connection refused, DNS, TLS). Those
+used to be indistinguishable; they are now reported separately, so read the message.
+
+## Named reasons worth branching on
+
+| Reason / code | HTTP | Meaning | Action |
+|---|---|---|---|
+| `oauth_mutation_busy` | 503 | another credential write is in flight | wait `Retry-After` (1s), retry once |
+| `catalog_busy` | 503 | a model-catalog gather is in flight | wait `Retry-After` (1s), retry once |
+| config-mutation lock reason | 503 | a config write holds the lock | retry shortly |
+| credential-conflict reason | — | the install is structurally broken | run `ocx doctor`; do NOT retry |
+| `stale_preview` | 409 | a storage cleanup digest no longer matches | re-run the preview |
+| `dest_exists` | 409 | a trash restore target already exists | resolve the file, then retry |
+| `codex_busy` | 409 | Codex is holding `state.sqlite` | retry after Codex quits |
+| `storage_mutation_busy` | 409 | another cleanup or restore is running | retry shortly |
+
+The two 503s carry `Retry-After: 1` from the server, so the wait is specified rather than guessed.
+
+The credential-conflict case is the one to stop on. It is not contention — it is a broken install,
+and repeating the call produces the same error indefinitely.
+
+## A retry policy that does not spin
+
+1. Exit 2 or 64 → fix arguments. Never retry unchanged.
+2. Exit 4 → distinguish a missing resource from a missing declaration. For a
+   resource, list first (`account list`, `provider list`, `access key list`); for
+   a declaration, consult family help. Do not retry the same lookup.
+3. For a read or a confirmed pre-write contention refusal, wait the stated
+   `Retry-After` interval and retry **once**. An exit 5 from provider apply or profile update requires
+   fresh review, not a timed retry. Never repeat an uncertain or persisted write
+   merely because its exit code is nonzero.
+4. Exit 1 with a credential-conflict reason → run `ocx doctor` and report. Do not retry.
+5. Exit 1 otherwise → read the message. A transport failure may be worth one retry; an unexpected
+   5xx is worth reporting.
+
+The rule behind all of it: retry contention, never retry a broken state. A loop that retries a
+credential conflict looks like progress and produces nothing.
+
+## Service and launchd semantics (macOS)
+
+Two states that read as failures and are not. Both come from the same change: a repair of a
+healthy job must not be an outage.
+
+**`ocx service repair` printing `service is already loaded from the current plist; nothing to
+do.` is success.** The repair renders the plist first and compares it. When the rendered
+bytes match the file, the token file is unchanged, and `launchctl print` reports the job
+loaded from that plist, launchd is not touched at all. Do not retry it, and do not escalate
+to `ocx service uninstall`.
+
+**`ocx service restart` is NOT an alias of `repair` — it always restarts.** It runs the same
+refresh, and when nothing was reloaded (the healthy, unchanged job above) it restarts the
+loaded job in place with `launchctl kickstart -k gui/<uid>/com.opencodex.proxy`, verifies the
+job with the same probe, and prints `service restarted (launchctl kickstart -k …)`. So when a
+restart is the actual requirement — after a change to `unauthenticatedLoopbackListener`,
+`hostname` or `port` — tell the operator `ocx service restart`, not a hand-written launchctl
+command. Linux restarts through `systemctl --user restart` and Windows stops then starts the
+task, on either verb.
+
+A bare `ocx service` still selects `repair`, so it will not bounce a healthy hub. Reserve
+`ocx service repair` for a job loaded from an older plist, or not loaded at all.
+`launchctl kickstart -k gui/$(id -u)/com.opencodex.proxy` is still a correct manual fallback
+and the failure path names it, but do not lead with it. `ocx restart` is a different verb
+entirely: it restarts a proxy process, not the service the manager supervises.
+
+`ocx service status` has four launchd verdicts, and only two of them call for a repair:
+
+| Summary | Meaning | Repair? |
+|---|---|---|
+| `installed and loaded` | A domain answers and runs the command this plist bakes | no |
+| `installed and loaded from an OLDER plist` | Running, from a definition that no longer matches | yes |
+| `installed, not loaded` | Every domain answered "absent" — proof the job is gone | yes |
+| `installed; launchd state could not be verified` | `launchctl` could not be asked | **no** |
+
+The last row is the one to get right. It is not evidence the service is down: the command
+itself recommends nothing, and a probe that could not run never marks a running proxy as
+dead. Reporting it as "not loaded" is what used to send operators to repair a serving hub.
+If the proxy answers `ocx ready`, the hub is up regardless of what the probe could see.
+
+## A hub-gated skip is not a failure
+
+`ocx sync`, `ocx sync-cache`, `ocx ensure` and `ocx restore back` on a `runtimeRole: "hub"`
+can exit 0 having deliberately written nothing:
+
+> This machine is a hub; it does not rewrite its own Codex/Grok/Claude configs unless
+> unauthenticatedLoopbackListener is enabled.
+
+That is the hub gate, not the operator's `clientIntegrations` toggle, and not a lock
+conflict — there is nothing to retry. Either enable the listener and restart the proxy
+(`ocx service restart` on a service install), or
+report that this hub leaves its own clients native. Details:
+[05_remote_hub.md](05_remote_hub.md#the-hub-gate-on-the-hubs-own-clients).
+
+## A pinned sync that refuses (exit 5)
+
+`ocx sync --expect-link <linkId>` and `ocx sync --expect-hub-key <apiKeyId>` sync only when, under
+the lock that chooses the sync path, the machine is still connected to that link or with that hub
+key. Otherwise they write nothing, never fall back to the local providers, exit 5, and end stderr
+with one JSON line: `{"phase":"child_link_mismatch"|"hub_client_mismatch","reason":"..."}`. Read
+the `phase`, not the exit code alone. `reason` is `disconnected`, `invalid_state`,
+`disconnect_pending`, `pending_operation` (a key rotation, connect or other sync in progress), `hub_client`,
+`link_client`, `other_link` or `other_key`. Do not retry unchanged: re-read
+`ocx connect status --json` and decide whether this machine should follow that Home at all. A
+malformed, repeated or doubled flag exits 2 before anything is read. Older versions ignore the
+flags, so check `ocx --version` before relying on them.
+
+## Destructive verbs fail closed
+
+`storage trash restore` and `storage policy run` exit 2 without `--yes` and send no mutating
+request. `storage cleanup` without `--yes` previews and exits 0; only `--yes` deletes.
+
+`storage cleanup` also refuses locally if the preview returned no digest, rather than sending an
+empty one and getting a 400 that looks like a bug in the verb.
+
+## What no exit code will give you
+
+Starring the repository has no CLI verb and no failure code, because it has no CLI path at all. It
+spends the user's GitHub identity and the server requires a dashboard session for exactly that
+reason. `ocx inspect star` reads status; if starring is wanted, ask the user.
+
+
+## Provider save and convergence failures
+
+Live provider lifecycle, pacing and batch operations can return `success: true`
+with a nonzero exit: the configuration was saved but `catalogRefresh` failed or
+was skipped as busy, stale, refused or unavailable. Preserve both facts. Read back
+with `ocx provider snapshot --json` (and pacing read for pacing changes), then
+inspect the reported convergence issue. Do not resend an add/remove/apply to
+repair catalog refresh. Null, absent or `not-requested` refresh does not mean
+client synchronization occurred, even when the command exits 0.
+
+Local add with `--sync --json` also really attempts synchronization after saving.
+No running proxy returns `sync.status: "not-running"`, `sync.ok: false`,
+`needsSync: true`, and exit 1. Refused or failed sync is nonzero too; no rollback
+is implied. Applied sync clears `needsSync`; policy-skipped and catalog-only
+outcomes leave it true. JSON is an output choice, not a dry-run flag.
+
+A stale batch baseline returns HTTP 409 / exit 5. Obtain a fresh snapshot from the
+same intended host/context, compare concurrent changes, and rebuild the next
+document for review. Do not silently replace the baseline, auto-rebase, or retry.
+Pacing scalar PATCH has no baseline check and can overwrite a concurrent edit;
+use snapshot/apply for compare-and-swap. Batch removal requires `--yes` and does
+not include single-provider DELETE's OAuth account cleanup.
+
+Invalid/oversized input, interactive stdin, missing removal confirmation and
+conflicting flags return exit 2 before mutation. Files must be regular UTF-8 JSON;
+each read has a 4 MiB cap and 30-second deadline, and the combined batch request
+also has a 4 MiB cap. Fix the input rather than retrying unchanged. Provider errors
+use fixed safe messages and never expose arbitrary nested server bodies. An
+unusable receipt or transport failure can mean the write outcome is unknown:
+inspect the target rather than claiming rollback or trying a local fallback.
+
+## Model and routing recovery
+
+Local custom-model saves have opportunistic sync: no proxy yields
+`sync.status: "not-attempted"`, `needsSync: true` and exit 0. Do not confuse this
+with an explicitly requested provider `--sync` failing because no proxy exists.
+Attempted failed/refused/incomplete custom-model sync returns nonzero after saving;
+policy-skipped success can still exit 0 while needing sync. Local JSON removal
+requires `--yes`; live removal always requires it and never falls back locally.
+
+New live custom, picker, display-name and profile writes, plus combo set, return
+1 with the saved receipt when catalog refresh is skipped, failed or degraded.
+Display-name can recognize HTTP 503 with `saved: true` and failed refresh as this
+partial result. Inspect current state; a nonzero exit does not mean rollback.
+Other errors print fixed stderr messages, not JSON error envelopes. Unknown write
+outcomes must not trigger automatic repetition.
+
+For manual picker order, supply each routed public ID exactly once with the
+required featured prefix. Native-inclusive saved order requires an explicit
+reset/default decision before replacement; do not reset merely to suppress a
+refusal. A changed observation before PUT returns 409/exit 5. Re-read status and
+identities, review the list and resubmit only the intended edit. This recheck is
+not CAS. Most-used refuses incomplete usage rather than ranking missing data as zero.
+
+Profile update requires the original explicit revision and an editable-only
+file. A 409/exit 5 means read show again and review concurrent changes; never
+silently substitute a fresh revision, retry, or fall back to create. Create/update
+may activate Lab and enabled automation, including upstream probes, so retrying
+is not an observational operation. Deletion has no revision protection.
+
+Combo target files cannot be combined with `--targets`. An incompatible retained
+native alias can make `--native-alias off` refuse; clear that alias too only if
+that is the intended change. `set` is an upsert without CAS. Statistics with
+incomplete history can exit 0: preserve coverage limits and nullable measurements;
+never convert the report into unsupported cost or savings claims.
+
+## Account, settings and v2 boundaries
+
+Unsupported pool fields or conflicting account selectors refuse before writing.
+Null stored policy, effective state and inert pooling are different; do not turn
+null into false or retry an unsupported setting. OpenAI per-account auto-switch
+requires `--account`; omission retains pool scope. Unavailable quota activation
+may return 409: inspect window availability, never enable paid credits or consume
+a reset grant as recovery. Anthropic grant GET may read upstream but never spends.
+
+Login options depend on the actual flow. Device-only browser flags, add-account
+on reauth/Codex, or either new flag on native Kiro `--method` refuse before login.
+Preserve flow identity on cancellation/expiry; do not restart or verify automatically.
+Live OAuth logout failure never authorizes local credential deletion.
+
+Memory/compaction set replaces a full block, not just supplied phase/scope fields.
+Memory `{}` or clear/null restores existing routing without disabling the pipeline;
+compaction clear restores ordinary compaction. Read back before fixing an unintended
+scope. A settings write can be accepted yet return pending/unverified and exit 1.
+Missing Ultra Fast read-back must remain unverified. Sidecar saved state and native
+apply are separate; inspect ownership rather than replaying a refused apply.
+
+v2 parse failures preserve local exit 1 and live exit 2. Advisory acknowledgment
+is accepted only for explicit live mode; never auto-ack to bypass refusal. A 502
+from live v2 may mean partial native application, not rollback. Local sync can
+actually run without a discovered proxy port; void/malformed evidence exits 1 as
+unverified. Inspect `v2 status` on the same local/live target before recovery.
+Unknown state, saved state and client convergence must remain separate.
+
+## Integration and maintenance recovery
+
+Preview is an observation: valid refused/no-op plans exit 0. Read `canApply`,
+`willChange` and refusal reason before choosing a write. Never auto-confirm drift,
+overwrite a conflict, or treat a fingerprint as permission. An unbound refusal
+fingerprint cannot commit. A stale bound write exits 5, leaves stdout empty and
+prints a fixed re-preview instruction on stderr; preserve the exact original
+client/action/profile/opId/default-map/drift intent when preparing a new preview.
+Do not adopt a replacement fingerprint automatically. Syntax errors exit 2,
+not-found 4, malformed/runtime failures 1. Preview needs passive catalog evidence;
+unavailability does not trigger a provider refresh inside the command.
+
+History deletion is irreversible. The latest recovery row is protected. If a
+receipt says `snapshotRemoved:false`, the row is already retired and exit is 1;
+inspect before further cleanup, never claim rollback or repeat deletion. Aside
+sync empty results mean no eligible profiles; partial results leave successful
+writes intact and exit 1. There is no profile selector, local-write fallback or
+broad-sync fallback for that command. Preserve residual and redacted backup facts.
+
+Runtime Desktop import saves only and retains server conflict/availability/applied
+marker checks. On refusal, do not import locally or apply native state as a fallback.
+Cursor installer unavailable is a valid read even with null reason; no download,
+installation or trust change follows automatically.
+
+Hub activation off can return outer HTTP 200 with `available:false`: the CLI emits
+that narrow observation and exits 1. It is not an available empty Hub. Inner 409
+is exit 5; client-role, transport and malformed replies remain failures. Inspect
+the intended Hub and its activation setting without automatically changing them.
+
+Storage target forms conflict; omitted enable remains unchanged and set does not
+run cleanup. Forced link revoke requires `--force --yes`. Success reports remote
+cleanup skipped, and idempotent not-found reports it unverified; neither confirms
+an attempted remote disconnect. Review the remote-client disconnect recovery
+separately. Do not interpret exit 0 as proof that all remote state was removed.
+
+## Filtered observation recovery
+
+`logs filter` rejects follow/events, conflicting outputs, unknown/repeated flags
+and invalid bounds before discovery. Empty matches are a successful observation
+of the scanned window. Malformed or oversized replies and transport failures are
+nonzero, never an empty success. Reduce `--scan-limit` for an oversized snapshot;
+reducing `--limit` alone cannot reduce the fetched window. No automatic history
+scan or retry occurs.
+
+`usage --search` is local model-row selection after the scoped read. A search
+miss leaves report totals intact; `filter.matched:false` and incomplete-history
+markers remain independent. Invalid model data must not be read as no matches.
+Omit search to recover the existing report layout, not to change authorization.
+
+`companion usage` retains available ranges when another range fails, prints a
+fixed partial-failure diagnostic and exits 1. Do not sum unavailable data as zero.
+Valid server defaults from a corrupt settings file remain usable but visibly
+flagged; malformed settings stop before usage reads. Each settings/range GET has
+its own 10-second fetch/body deadline after discovery and 32 MiB body bound;
+these are not a 10-second whole-command promise. Signals exit 130/143 without
+late output. A retry is a new observation, not an atomic continuation.
+
+API-key `account list --quota` distinguishes unsupported, passive, unmeasured and
+unavailable readings. Missing quota-mode evidence on a returned key row is
+unverified/nonzero; invalid consumed fields fail instead of becoming zero.
+`--refresh` bypasses the existing quota cache only when quota was requested.
+Do not loop on failed probes: explicit quota reads may contact providers.
+
+## Observation and selected-key recovery
+
+Follow usage errors exit 2. Request/injection follow failures stop with fixed stderr
+and exit 1; they do not silently truncate, retry or reconnect. A 32 MiB window
+refusal suggests reducing `--limit`. Detected runtime drift requires an explicit
+restart of follow. Ctrl-C/SIGINT exits 130, SIGTERM 143, without subsequent polls
+or output. Retained rows are observations, not proof of a complete history. Use
+log events for resets/removals; legacy row JSONL cannot reconstruct them. Injection
+has no epoch/gap indicator and cannot promise lossless restart recovery.
+
+Timeline exclusions use `--hide-provider`; `--provider` is unsupported. Stale or
+future bucket windows fail instead of appearing as current usage; only the
+request-time end or its immediate successor after a rollover is accepted. Read the
+applied filter acknowledgment and incomplete evidence rather than retrying a zero
+plot as a fault. Management health can report status ok with degraded spendLedger;
+liveness and subsystem readiness are different. Key-scoped usage refuses an
+unacknowledged filter; connected clients reject the flag before enrolled-key access
+or network. Unknown acknowledged IDs can legitimately match nothing.
+
+Rename accepts only a unique key identity/name and a valid new label. Usage or
+ambiguous/missing selector exits 2; an unconfirmed write exits 1 with fixed stderr.
+Re-list masked state before retrying. It never rotates keys or broadens scopes.
+
+Selected-key model/audio input is explicit bounded stdin in the operator's private
+terminal. Invalid grammar/input exits 2 before a data request; input timeout or
+operation/target/HTTP/response-size/schema failure exits 1. Never repair failure by using an
+admin/enrolled credential, another protocol, another origin, automatic key capture
+or a repeated paid request/upload. Model tests only advance after exact native
+credential-required 401; authless/unrecognized control means verification unavailable,
+not a broken key. Chosen-key JSON operational failure preserves the versioned
+observations with fixed stderr. Unkeyed legacy JSON remains the original payload.
+
+A usable limited model reply is visibly limited, not unsupported. Refusal, content
+filter, tool-only or malformed replies cannot establish success. Even a success
+report cannot certify atomic key admission, scope or billing identity. Only exact
+key occurrences in permitted text are redacted, not every possible encoding.
+
+Transcription failure prints no stdout, only fixed stderr/nonzero; successful JSON
+is `{text}`. Do not re-upload automatically. Live-check operational failures retain
+the ready/close DTO; readiness plus unverified close is partial/exit 1. A normal
+close after earlier failure is still failure. No raw frames/errors or credential
+carriers are exposed. Timeouts and cancellation close local resources without
+proving upstream lease release or absence of cost. Signals return 130/143.
+
+## Local config failures
+
+`config validate` exits 1 for an invalid config, including in JSON mode (`{ok:false,error}`). `config`, `config show`, and `config get` warn on stderr and exit nonzero when displaying fallback defaults. Use `config validate` to inspect the failure or `config show --source` for an explicit diagnostic read; that read may exit 0 while reporting `source: "fallback"` and a warning.
+
+Local `provider add` validates the complete candidate before saving. A refused destination leaves config bytes unchanged. Add `--allow-private-network` only for an intentionally local provider; blocked metadata endpoints remain forbidden. `health` accepts only one optional `--json`; other arguments exit 2 before discovery. Alias usage failures also exit 2.
+
+File `config export --json` emits only `{ok:true,path}`; the requested file contains raw credentials. Export to `-` always remains a raw config document and must stay out of agent transcripts.
