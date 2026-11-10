@@ -79,6 +79,7 @@ Safety rules:
 - `apply` shows manual changes against the journal and asks for confirmation in a TTY;
   without an interactive terminal, it refuses to overwrite them unless `apply -y`/`--yes`
   is passed. `-y`/`--yes` bypasses only this confirmation and does not bypass restore safeguards.
+- Before writing, `apply` prints a table per changed file: `Δ | Key | Was | Now` (`~` changed, `-` deleted, `+` added). Secret values are shown as `[redacted]`, but a changed secret appears as a `~` row. Without a TTY the output has no colors.
 - A run holds the lock directory `~/.ocx-export/mutation.lock`; a second run fails instead of racing.
 - An empty or invalid hub catalog aborts the run before anything is written.
 - The log `~/.ocx-export/ocx-export.log` redacts tokens and keys.

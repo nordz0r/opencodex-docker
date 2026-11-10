@@ -368,45 +368,101 @@ function assertJournalCurrent(file, entry) {
 
 const snapshotText = (snapshot) => (snapshot ? Buffer.from(snapshot.data, 'base64').toString('utf8') : '');
 
-// Current-to-proposed line diff, bounded to keep large catalogs readable.
+// Current-to-proposed line diff as ordered ops, bounded to keep large catalogs readable.
 // Falls back to a prefix/suffix diff when the LCS table would be too large.
-function compactDiff(beforeText, afterText, limit = 60) {
+function diffOps(beforeText, afterText) {
   const a = beforeText ? String(beforeText).split('\n') : [];
   const b = afterText ? String(afterText).split('\n') : [];
-  const out = [];
+  const ops = [];
   if (a.length * b.length > 4_000_000) {
     let head = 0;
     while (head < a.length && head < b.length && a[head] === b[head]) head += 1;
     let tail = 0;
     while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail += 1;
-    for (const line of a.slice(head, a.length - tail)) out.push(`- ${line}`);
-    for (const line of b.slice(head, b.length - tail)) out.push(`+ ${line}`);
-  } else {
-    const width = b.length + 1;
-    const table = new Int32Array((a.length + 1) * width);
-    for (let i = a.length - 1; i >= 0; i -= 1) {
-      for (let j = b.length - 1; j >= 0; j -= 1) {
-        table[i * width + j] = a[i] === b[j]
-          ? table[(i + 1) * width + j + 1] + 1
-          : Math.max(table[(i + 1) * width + j], table[i * width + j + 1]);
-      }
-    }
-    let i = 0;
-    let j = 0;
-    while (i < a.length && j < b.length) {
-      if (a[i] === b[j]) { i += 1; j += 1; continue; }
-      if (table[(i + 1) * width + j] >= table[i * width + j + 1]) { out.push(`- ${a[i]}`); i += 1; }
-      else { out.push(`+ ${b[j]}`); j += 1; }
-    }
-    for (; i < a.length; i += 1) out.push(`- ${a[i]}`);
-    for (; j < b.length; j += 1) out.push(`+ ${b[j]}`);
+    for (const line of a.slice(head, a.length - tail)) ops.push({ op: '-', line });
+    for (const line of b.slice(head, b.length - tail)) ops.push({ op: '+', line });
+    return ops;
   }
-  const changed = out.length;
-  return {
-    lines: changed > limit ? [...out.slice(0, limit), `… ${changed - limit} more changed line(s)`] : out,
-    added: out.filter((line) => line.startsWith('+ ')).length,
-    removed: out.filter((line) => line.startsWith('- ')).length,
-  };
+  const width = b.length + 1;
+  const table = new Int32Array((a.length + 1) * width);
+  for (let i = a.length - 1; i >= 0; i -= 1) {
+    for (let j = b.length - 1; j >= 0; j -= 1) {
+      table[i * width + j] = a[i] === b[j]
+        ? table[(i + 1) * width + j + 1] + 1
+        : Math.max(table[(i + 1) * width + j], table[i * width + j + 1]);
+    }
+  }
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i += 1; j += 1; continue; }
+    if (table[(i + 1) * width + j] >= table[i * width + j + 1]) { ops.push({ op: '-', line: a[i] }); i += 1; }
+    else { ops.push({ op: '+', line: b[j] }); j += 1; }
+  }
+  for (; i < a.length; i += 1) ops.push({ op: '-', line: a[i] });
+  for (; j < b.length; j += 1) ops.push({ op: '+', line: b[j] });
+  return ops;
+}
+
+// The smallest record an edited line belongs to: a JSON/TOML/YAML map entry, a YAML
+// sequence item (header line, or a `- key: value` entity), or a TOML table header.
+// Rows pair a removed record with the added one carrying the same key.
+function entryOf(line) {
+  const text = String(line);
+  const indentOf = () => text.match(/^ */)[0].length;
+  const trim = (value) => value.trim();
+  const pair = (key, value) => ({ key: key || '(line)', value: trim(value), header: false, indent: indentOf() });
+  const header = text.match(/^\s*(\[\[?[^\]\s]+\]\]?)\s*$/);
+  if (header) return { key: trim(text), value: '', header: true, indent: indentOf() };
+  const seq = text.match(/^(\s*)-(?:\s+(.*))?$/);
+  if (seq) {
+    const body = (seq[2] || '').trim();
+    if (body.startsWith('{')) return pair(`${seq[1]}-`, body);
+    const nested = body.match(/^("[^"]*"|'[^']*'|[^\s:'"#][^:'"#]*?)\s*:\s*(.*)$/);
+    if (nested) return pair(`${seq[1]}- ${trim(nested[1])}`, nested[2]);
+    return pair(`${seq[1]}-`, body);
+  }
+  const json = text.match(/^\s*"([^"]*)"\s*:\s*(.*)$/);
+  if (json) return pair(json[1], json[2]);
+  const map = text.match(/^(\s*)([^\s:#][^:#]*?)\s*:(?:\s+(.*))?$/);
+  if (map) return pair(map[2], map[3] ?? '');
+  const toml = text.match(/^\s*([A-Za-z0-9_.-]+)\s*=\s*(.*)$/);
+  if (toml) return pair(toml[1], toml[2]);
+  return pair('', text);
+}
+
+// Turn ordered diff ops into table records. A removed and an added entry with the
+// same key pair into one changed value (~) when their values differ; equal values
+// cancel. Everything else is a plain deletion (-) or insertion (+). Headers and
+// unparseable lines never pair, but they are never hidden either.
+function diffRecords(ops) {
+  const removed = [];
+  const added = [];
+  for (const op of ops) (op.op === '-' ? removed : added).push(entryOf(op.line));
+  const queue = new Map();
+  added.forEach((item, index) => {
+    if (item.header || item.key === '(line)') return;
+    if (!queue.has(item.key)) queue.set(item.key, []);
+    queue.get(item.key).push({ index, value: item.value });
+  });
+  const records = [];
+  const used = new Set();
+  for (const gone of removed) {
+    let paired = false;
+    const candidates = gone.header || gone.key === '(line)' ? [] : queue.get(gone.key) || [];
+    while (candidates.length && !paired) {
+      const candidate = candidates.shift();
+      if (used.has(candidate.index)) continue;
+      used.add(candidate.index);
+      paired = true;
+      if (candidate.value !== gone.value) records.push({ delta: '~', key: gone.key, old: gone.value, new: candidate.value });
+    }
+    if (!paired) records.push({ delta: '-', key: gone.key, old: gone.value, new: '' });
+  }
+  added.forEach((item, index) => {
+    if (!used.has(index)) records.push({ delta: '+', key: item.key, old: '', new: item.value });
+  });
+  return { records, added: added.length, removed: removed.length };
 }
 
 // Interactive yes/no. Returns null when no terminal is available — piped input,
@@ -429,14 +485,25 @@ function promptContinue(question) {
   });
 }
 
-function previewText(snapshot) {
+const SECRET_LINE = /(["']?[\w.-]*(?:api[-_]?key|token|secret|password|authorization)[\w.-]*["']?\s*[:=]\s*).*/i;
+
+// Secret values are never printed. Each distinct secret line gets a sequential
+// id shared by both sides of one diff, so a changed secret still shows as a
+// row. Ordinals, not hashes: nothing derived from the secret leaves the process.
+function secretId(raw, ids) {
+  if (!ids.has(raw)) ids.set(raw, ids.size + 1);
+  return `<redacted#${ids.get(raw)}>`;
+}
+
+function previewText(snapshot, ids) {
   let secretIndent = null;
   return snapshotText(snapshot).split('\n').map((line) => {
     const indent = line.match(/^\s*/)[0].length;
     if (secretIndent !== null && line.trim() && indent <= secretIndent) secretIndent = null;
-    if (secretIndent !== null) return `${' '.repeat(indent)}[redacted]`;
-    const masked = line.replace(/(["']?[\w.-]*(?:api[-_]?key|token|secret|password|authorization)[\w.-]*["']?\s*[:=]\s*).*/i, '$1[redacted]');
-    if (masked !== line) secretIndent = indent;
+    if (secretIndent !== null) return `${' '.repeat(indent)}${secretId(line, ids)}`;
+    const secret = SECRET_LINE.test(line);
+    if (secret) secretIndent = indent;
+    const masked = secret ? line.replace(SECRET_LINE, `$1${secretId(line, ids)}`) : line;
     return redact(masked).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
   }).join('\n');
 }
@@ -456,7 +523,8 @@ function printChangePreview(changes) {
   write(row(ui.bold('File'), ui.bold('Action'), ui.bold('+ / - lines'), ui.bold('Review')));
   for (const change of changes) {
     const { file, snapshot, after, manual } = change;
-    const diff = compactDiff(previewText(snapshot), previewText(after), 16);
+    const ids = new Map();
+    const diff = diffRecords(diffOps(previewText(snapshot, ids), previewText(after, ids)));
     change.diff = diff;
     const same = sameSnapshot(snapshot, after);
     const action = same ? ui.dim('KEEP') : after === null ? ui.red('DELETE') : snapshot === null ? ui.green('ADD') : ui.yellow('UPDATE');
@@ -464,17 +532,29 @@ function printChangePreview(changes) {
     write(row(fit(shortFile, fileWidth), action, `+${diff.added} / -${diff.removed}`, manual ? ui.yellow('manual') : ui.dim('—')));
   }
   write(boxBottom(width));
+  const keyWidth = 18;
+  const valueWidth = Math.max(6, Math.floor((width - 13 - keyWidth) / 2));
+  const show = (value) => String(value).replace(/<redacted#\d+>/g, '[redacted]');
+  const entryRow = (delta, key, was, now, header = false) => {
+    const color = header ? (value) => value : delta === '~' ? ui.yellow : delta === '-' ? ui.red : ui.green;
+    const wrap = header ? ui.bold : (value) => value;
+    const wasWrap = header ? wrap : ui.dim;
+    return boxRow(width,
+      ` ${color(padVis(delta, 1))}  ${wrap(padVis(fit(show(key), keyWidth), keyWidth))}  ${wasWrap(padVis(fit(show(was), valueWidth), valueWidth))}  ${wrap(padVis(fit(show(now), valueWidth), valueWidth))} `);
+  };
   for (const { file, snapshot, after, diff } of changes) {
     if (sameSnapshot(snapshot, after)) continue;
-    write(`\n  ${ui.bold(fit(file, width - 4))}  ${ui.dim('current → proposed')}`);
-    for (const line of diff.lines) {
-      const color = line.startsWith('+ ') ? ui.green : line.startsWith('- ') ? ui.red : ui.dim;
-      write(`    ${color(fit(line, width - 4, false))}`);
-    }
-    if (!diff.lines.length) write(ui.dim('    Content unchanged after masking; secret values or permissions differ.'));
+    const shortFile = file.startsWith(`${os.homedir()}${path.sep}`) ? `~${file.slice(os.homedir().length)}` : file;
+    write('');
+    write(boxTop(width, fit(shortFile, width - 10)));
+    write(entryRow('Δ', 'Key', 'Was', 'Now', true));
+    if (!diff.records.length) write(boxRow(width, ` ${ui.dim('No visible entry changes.')} `));
+    for (const record of diff.records.slice(0, 16)) write(entryRow(record.delta, record.key, record.old, record.new));
+    if (diff.records.length > 16) write(boxRow(width, ` ${ui.dim(`… ${diff.records.length - 16} more entry change(s)`)} `));
     if (snapshot && after && snapshot.mode !== after.mode) {
-      write(ui.dim(`    permissions: ${snapshot.mode.toString(8)} → ${after.mode.toString(8)}`));
+      write(boxRow(width, ` ${ui.dim(`permissions: ${snapshot.mode.toString(8)} → ${after.mode.toString(8)}`)} `));
     }
+    write(boxBottom(width, '~ changed   - deleted   + added'));
   }
   write('');
 }
@@ -2258,8 +2338,8 @@ OMP defaults to openai-responses; configure without --omp-api preserves the save
 Use configure --omp-api anthropic-messages to select the Messages API explicitly.
 Codex requires OCX_API_TOKEN in its launch environment (env_key); no OpenCodex binary is needed.
 restore uses the existing byte-and-mode journal, without a key or network access.
-apply previews current → proposed changes in a file table with a bounded, secret-masked diff.
-TTY output uses color (NO_COLOR disables it); + adds lines and - removes current lines.
+apply previews current → proposed changes: a file table (File, Action, +/- lines), then per-file
+entry tables (Δ, Key, Was, Now) with secret values masked; ~ changed, - deleted, + added.
 Manual edits are flagged separately and require confirmation before any write (CLI and menu).
 Use apply -y/--yes to skip only this confirmation; the preview is still printed.
 Without an interactive terminal, manual changes abort apply unless -y/--yes is passed; restore remains strict.
