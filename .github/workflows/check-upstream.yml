@@ -63,12 +63,11 @@ jobs:
           if [ -z "${sha}" ]; then
             echo "::error::upstream tag v${version} not found"; exit 1
           fi
-          # package.json in the tag must agree with the version
-          pkg="$(curl -fsSL "https://raw.githubusercontent.com/lidge-jun/opencodex/v${version}/package.json")"
-          actual="$(printf '%s' "${pkg}" | node -e "let r='';process.stdin.on('data',c=>r+=c).on('end',()=>process.stdout.write(JSON.parse(r).version))")"
-          if [ "${actual}" != "${version}" ]; then
-            echo "::error::tag v${version} package.json says ${actual}"; exit 1
-          fi
+          # The tag must be the source of the npm release. Handles tags cut
+          # without a committed version bump (e.g. v2.100.1/v2.100.2) by
+          # proving npm-tarball ↔ tag equivalence instead of trusting the
+          # version string inside the tag.
+          bash scripts/verify-upstream-release.sh "${version}" "${sha}"
           {
             echo "version=${version}"
             echo "commit=${sha}"

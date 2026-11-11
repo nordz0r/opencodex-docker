@@ -15,12 +15,17 @@
 ARG BUN_IMAGE=oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d
 
 FROM ${BUN_IMAGE} AS build
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl && rm -rf /var/lib/apt/lists/*
 WORKDIR /home/bun/app
 
 # Upstream sources are fetched from the exact verified tag; the build context carries
 # only this packaging repo (workflows, scripts, docs) — never a modified copy of OpenCodex.
 # If UPSTREAM_VERSION is not provided, defaults to the latest stable tag (auto-resolved).
+# Fail-closed tag↔npm-release verification (also patches the version field
+# for tags upstream cut without committing the bump, e.g. v2.100.1/v2.100.2).
+COPY --chown=bun:bun scripts/verify-upstream-release.sh /tmp/verify-upstream-release.sh
+RUN chmod +x /tmp/verify-upstream-release.sh
+
 ARG UPSTREAM_VERSION=latest
 ARG UPSTREAM_COMMIT
 RUN set -euo pipefail \
@@ -31,7 +36,9 @@ RUN set -euo pipefail \
     && git clone --depth 1 --branch "v${UPSTREAM_VERSION}" \
          https://github.com/lidge-jun/opencodex.git /tmp/opencodex-src \
     && cd /tmp/opencodex-src \
-    && test "$(node -p "require('./package.json').version")" = "${UPSTREAM_VERSION}" \
+    && if [ "$(node -p "require('./package.json').version")" != "${UPSTREAM_VERSION}" ]; then \
+         bash /tmp/verify-upstream-release.sh "${UPSTREAM_VERSION}" "$(git rev-parse HEAD)" /tmp/opencodex-src --patch-version; \
+       fi \
     && if [ -n "${UPSTREAM_COMMIT:-}" ]; then \
          test "$(git rev-parse HEAD)" = "${UPSTREAM_COMMIT}"; \
        fi \

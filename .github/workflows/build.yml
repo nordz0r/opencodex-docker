@@ -45,17 +45,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Verify upstream tag and package.json version agreement
+      - name: Verify upstream tag is the source of the npm release
         run: |
           set -euo pipefail
           version='${{ inputs.version }}'
-          git ls-remote --exit-code https://github.com/lidge-jun/opencodex.git "refs/tags/v${version}" >/dev/null
-          pkg="$(curl -fsSL "https://raw.githubusercontent.com/lidge-jun/opencodex/v${version}/package.json")"
-          actual="$(printf '%s' "$pkg" | node -e "let r='';process.stdin.on('data',c=>r+=c).on('end',()=>process.stdout.write(JSON.parse(r).version))")"
-          if [ "${actual}" != "${version}" ]; then
-            echo "::error::package.json version ${actual} != tag version ${version}"
-            exit 1
-          fi
+          # Fail-closed tag↔npm-release verification; accepts tags cut without
+          # a committed version bump only when the npm tarball proves the tag
+          # tree is the published release (see scripts/verify-upstream-release.sh).
+          bash scripts/verify-upstream-release.sh "${version}" '${{ inputs.commit }}'
           echo "verified upstream v${version} @ ${{ inputs.commit }}"
 
       - name: Compute all image refs and tags
