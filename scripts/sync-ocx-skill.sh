@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Synchronize the vendored OpenCodex skill from upstream without clobbering
-# local edits. Upstream defaults to the remote's default branch (origin/HEAD);
-# pass a SHA, tag, or branch via OCX_UPSTREAM_SKILL_REVISION when a
-# reproducible snapshot is required.
+# local edits. Upstream defaults to the latest stable release tag (vX.Y.Z,
+# strict semver, no pre-release suffix), chosen by version sort rather than
+# tag date. Pass a SHA, tag, or branch via OCX_UPSTREAM_SKILL_REVISION to
+# override. The development branch is not followed automatically.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -19,20 +20,22 @@ if [ "$MODE" = "--check" ]; then MODE=check; fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 git clone --quiet "$UPSTREAM_REPO_URL" "$tmp/upstream"
+# Clone already transfers tags, but fetch them explicitly so a later
+# default-branch-only clone still sees release tags.
+git -C "$tmp/upstream" fetch --quiet --tags origin
 
 if [ -z "$UPSTREAM_REVISION" ]; then
-  if ! default_ref="$(git -C "$tmp/upstream" symbolic-ref --quiet refs/remotes/origin/HEAD)"; then
-    echo "Cannot determine the upstream default branch (origin/HEAD is missing) in $UPSTREAM_REPO_URL" >&2
+  UPSTREAM_REVISION="$(
+    git -C "$tmp/upstream" tag --list --sort=-v:refname       | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; }       | head -n 1
+  )"
+  if [ -z "$UPSTREAM_REVISION" ]; then
+    echo "No stable upstream release tags matching vX.Y.Z (strict semver, no pre-release suffix) in $UPSTREAM_REPO_URL" >&2
     exit 1
   fi
-  UPSTREAM_REVISION="${default_ref#refs/remotes/origin/}"
 fi
 
 if ! UPSTREAM_COMMIT="$(git -C "$tmp/upstream" rev-parse --verify "${UPSTREAM_REVISION}^{commit}" 2>/dev/null)"; then
   echo "Upstream revision '${UPSTREAM_REVISION}' is not a commit in $UPSTREAM_REPO_URL" >&2
-  if default_ref="$(git -C "$tmp/upstream" symbolic-ref --quiet refs/remotes/origin/HEAD)"; then
-    echo "The repository default branch is ${default_ref#refs/remotes/origin/}." >&2
-  fi
   exit 1
 fi
 
