@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 concurrency:
   group: ocx-skill-upstream-sync
@@ -58,3 +59,7 @@ jobs:
               --title "chore: sync OCX skill from upstream" \
               --body "Automated upstream skill update. Review the skill diff and confirm the MIT license notice before merging. The sync script refuses local conflicts instead of overwriting local changes."
           fi
+          # pull_request events caused by GITHUB_TOKEN stay action_required.
+          # workflow_dispatch is the documented exception and reports checks
+          # on the branch head SHA, which then show up on the PR.
+          gh workflow run pull-request.yml --ref "$BRANCH"

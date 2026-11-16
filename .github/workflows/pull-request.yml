@@ -11,10 +11,15 @@ on:
       - 'skills/**'
       - 'test/**'
       - '.github/workflows/**'
+  # Allows sync-ocx-skill (GITHUB_TOKEN) to start this workflow after it
+  # opens or updates a bot PR. pull_request events from that token stay
+  # action_required until a maintainer approves them. Checks from this
+  # dispatch attach to the branch head SHA and appear on the PR.
+  workflow_dispatch:
 
 jobs:
   skill-sync:
-    name: Report vendored skill drift (non-blocking)
+    name: Skill sync checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
