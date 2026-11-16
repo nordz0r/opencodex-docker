@@ -9,6 +9,7 @@ on:
       - 'Dockerfile'
       - 'scripts/**'
       - 'skills/**'
+      - 'test/**'
       - '.github/workflows/**'
 
 jobs:
@@ -19,6 +20,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Offline default-branch regression
+        run: bash test/sync-ocx-skill-default-branch.sh
       - name: Check vendored skill
         continue-on-error: true
         run: bash scripts/sync-ocx-skill.sh --check
