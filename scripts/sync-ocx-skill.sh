@@ -26,7 +26,7 @@ git -C "$tmp/upstream" fetch --quiet --tags origin
 
 if [ -z "$UPSTREAM_REVISION" ]; then
   UPSTREAM_REVISION="$(
-    git -C "$tmp/upstream" tag --list --sort=-v:refname       | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; }       | head -n 1
+    git -C "$tmp/upstream" tag --list --sort=-v:refname       | { grep -E -m1 '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; }
   )"
   if [ -z "$UPSTREAM_REVISION" ]; then
     echo "No stable upstream release tags matching vX.Y.Z (strict semver, no pre-release suffix) in $UPSTREAM_REPO_URL" >&2
