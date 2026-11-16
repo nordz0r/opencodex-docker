@@ -21,9 +21,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: true
-      - name: Sync against upstream main without overwriting local edits
+      - name: Sync against latest stable upstream release without overwriting local edits
         run: bash scripts/sync-ocx-skill.sh
+      # Only propose a skill-update PR from main. workflow_dispatch on a
+      # feature branch is for verifying the sync script and must not push
+      # automation/sync-ocx-skill-upstream or open a PR against main.
       - name: Open or update pull request
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: automation/sync-ocx-skill-upstream

@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Synchronize the vendored OpenCodex skill from upstream without clobbering
-# local edits. Upstream defaults to main; pass a SHA/tag via the env override
-# when a reproducible snapshot is required.
+# local edits. Upstream defaults to the latest stable release tag (vX.Y.Z,
+# strict semver, no pre-release suffix), chosen by version sort rather than
+# tag date. Pass a SHA, tag, or branch via OCX_UPSTREAM_SKILL_REVISION to
+# override. The development branch is not followed automatically.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPSTREAM_REPO_URL="${OCX_UPSTREAM_REPO_URL:-https://github.com/lidge-jun/opencodex.git}"
-UPSTREAM_REVISION="${OCX_UPSTREAM_SKILL_REVISION:-main}"
+UPSTREAM_REVISION="${OCX_UPSTREAM_SKILL_REVISION:-}"
 SKILL_REL="skills/ocx"
 MODE="${1:-sync}"
 if [ "$#" -gt 1 ] || { [ "$MODE" != sync ] && [ "$MODE" != check ] && [ "$MODE" != --check ]; }; then
@@ -18,7 +20,38 @@ if [ "$MODE" = "--check" ]; then MODE=check; fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 git clone --quiet "$UPSTREAM_REPO_URL" "$tmp/upstream"
-UPSTREAM_COMMIT="$(git -C "$tmp/upstream" rev-parse --verify "$UPSTREAM_REVISION^{commit}")"
+# Clone already transfers tags, but fetch them explicitly so a later
+# default-branch-only clone still sees release tags.
+git -C "$tmp/upstream" fetch --quiet --tags origin
+
+if [ -z "$UPSTREAM_REVISION" ]; then
+  UPSTREAM_REVISION="$(
+    git -C "$tmp/upstream" tag --list --sort=-v:refname       | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; }       | head -n 1
+  )"
+  if [ -z "$UPSTREAM_REVISION" ]; then
+    echo "No stable upstream release tags matching vX.Y.Z (strict semver, no pre-release suffix) in $UPSTREAM_REPO_URL" >&2
+    exit 1
+  fi
+fi
+
+if ! UPSTREAM_COMMIT="$(git -C "$tmp/upstream" rev-parse --verify "${UPSTREAM_REVISION}^{commit}" 2>/dev/null)"; then
+  echo "Upstream revision '${UPSTREAM_REVISION}' is not a commit in $UPSTREAM_REPO_URL" >&2
+  exit 1
+fi
+
+# The recorded merge-base may live only on a tag or a deleted branch
+# (lidge-jun/opencodex removed main after 2.98.0; it diverged from dev).
+stamp_file="$ROOT/$SKILL_REL/.upstream-revision"
+if [ -f "$stamp_file" ]; then
+  stamp_rev="$(tr -d "[:space:]" < "$stamp_file")"
+  if [ -n "$stamp_rev" ] && ! git -C "$tmp/upstream" cat-file -e "${stamp_rev}^{commit}" 2>/dev/null; then
+    if ! git -C "$tmp/upstream" fetch --quiet origin "$stamp_rev"; then
+      echo "Cannot fetch recorded upstream revision ${stamp_rev} from $UPSTREAM_REPO_URL" >&2
+    fi
+  fi
+fi
+
+echo "Using upstream revision ${UPSTREAM_REVISION} (${UPSTREAM_COMMIT})"
 git -C "$tmp/upstream" checkout --quiet --detach "$UPSTREAM_COMMIT"
 test -d "$tmp/upstream/$SKILL_REL"
 test -f "$tmp/upstream/LICENSE"

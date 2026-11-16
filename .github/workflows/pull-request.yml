@@ -9,6 +9,7 @@ on:
       - 'Dockerfile'
       - 'scripts/**'
       - 'skills/**'
+      - 'test/**'
       - '.github/workflows/**'
 
 jobs:
@@ -19,6 +20,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Require executable bit on shell scripts
+        run: |
+          set -euo pipefail
+          bad="$(git ls-files -s -- 'scripts/*.sh' 'test/*.sh' | awk '$1 != "100755" { print }')"
+          if [ -n "$bad" ]; then
+            echo "These shell scripts must be mode 100755:" >&2
+            printf '%s\n' "$bad" >&2
+            exit 1
+          fi
+      - name: Offline latest-release regression
+        run: bash test/sync-ocx-skill-latest-release.sh
       - name: Check vendored skill
         continue-on-error: true
         run: bash scripts/sync-ocx-skill.sh --check
