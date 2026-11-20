@@ -13,8 +13,9 @@ on:
       - '.github/workflows/**'
   # Allows sync-ocx-skill (GITHUB_TOKEN) to start this workflow after it
   # opens or updates a bot PR. pull_request events from that token stay
-  # action_required until a maintainer approves them. Checks from this
-  # dispatch attach to the branch head SHA and appear on the PR.
+  # action_required until a maintainer approves them. sync-ocx-skill starts
+  # this dispatch after that gated run and deletes the gated run, because the
+  # PR shows only the newest check suite of this workflow for the head SHA.
   workflow_dispatch:
 
 jobs:
