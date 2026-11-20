@@ -60,6 +60,26 @@ jobs:
               --body "Automated upstream skill update. Review the skill diff and confirm the MIT license notice before merging. The sync script refuses local conflicts instead of overwriting local changes."
           fi
           # pull_request events caused by GITHUB_TOKEN stay action_required.
-          # workflow_dispatch is the documented exception and reports checks
-          # on the branch head SHA, which then show up on the PR.
+          # workflow_dispatch is the documented exception. The PR check list
+          # shows only the newest check suite of a workflow per commit, so the
+          # dispatch must start after the action_required pull_request run,
+          # and that empty run is removed so it cannot hide the real checks.
+          sha="$(git rev-parse HEAD)"
+          runs_api="repos/$GITHUB_REPOSITORY/actions/workflows/pull-request.yml/runs"
+          gated_run=""
+          for _ in $(seq 1 24); do
+            gated_run="$(gh api "$runs_api?event=pull_request&head_sha=$sha" \
+              --jq '.workflow_runs[0].id // empty')"
+            [ -n "$gated_run" ] && break
+            sleep 5
+          done
           gh workflow run pull-request.yml --ref "$BRANCH"
+          if [ -n "$gated_run" ]; then
+            conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$gated_run" --jq '.conclusion // empty')"
+            if [ "$conclusion" = "action_required" ]; then
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$gated_run"
+              echo "Removed gated pull_request run $gated_run for $sha."
+            fi
+          else
+            echo "No pull_request run for $sha after 120s; dispatched anyway." >&2
+          fi
