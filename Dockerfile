@@ -73,7 +73,12 @@ RUN bun scripts/generate-compatibility-version.ts \
 RUN rm -rf /tmp/opencodex-src/node_modules/@typescript /tmp/opencodex-src/node_modules/typescript
 
 FROM ${BUN_IMAGE} AS runtime
-# Apply Debian security updates to patch base image CVEs (e.g. openssl, util-linux)
+# Apply Debian security updates to patch base image CVEs (e.g. openssl, util-linux).
+# Pin krb5 to the trixie-security fix (DSA-6650-1, 1.21.3-5+deb13u2). The generic
+# apt-get upgrade already present here can be reused from a stale GHA layer cache
+# and leave the image on deb13u1; the pin changes this instruction and fail-closes
+# if the fixed packages are missing. oven/bun:1.4.5 (2026-11-19) predates the DSA
+# and does not include the fix.
 # Install nodejs, npm, zstd, and ca-certificates for coding CLI runtimes
 # (codex, claude, grok, omp)
 RUN apt-get update \
@@ -84,6 +89,10 @@ RUN apt-get update \
          zstd \
          curl \
          ca-certificates \
+         libgssapi-krb5-2=1.21.3-5+deb13u2 \
+         libk5crypto3=1.21.3-5+deb13u2 \
+         libkrb5-3=1.21.3-5+deb13u2 \
+         libkrb5support0=1.21.3-5+deb13u2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install official AI coding CLIs into global PATH (always latest releases):
